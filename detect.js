@@ -1,260 +1,752 @@
-// Canvas setup
-const drawCtx = drawCanvas.getContext('2d');
+/**
+ * Face Touch Monitor - MediaPipe-powered face touch detection
+ * Uses MediaPipe Face Mesh and Hand Landmarker for accurate proximity detection
+ */
 
-// Global flags
-const flipHorizontal = true;
-let stopPrediction = false;
-let isPlaying = false,
-    gotMetadata = false;
-let firstRun = true;
+import { FaceLandmarker, HandLandmarker, FilesetResolver, DrawingUtils } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/vision_bundle.mjs';
 
-// check if metadata is ready - we need the sourceVideo size
-sourceVideo.onloadedmetadata = () => {
-    console.log("video metadata ready");
-    gotMetadata = true;
-    if (isPlaying)
-        load()
-};
+// ============================================================================
+// State Management
+// ============================================================================
 
-// Check if the sourceVideo has started playing
-sourceVideo.onplaying = () => {
-    console.log("video playing");
-    isPlaying = true;
-    if (gotMetadata) {
-        load()
+const state = {
+    isRunning: false,
+    faceLandmarker: null,
+    handLandmarker: null,
+    video: null,
+    canvas: null,
+    ctx: null,
+    drawingUtils: null,
+    animationId: null,
+
+    // Statistics
+    touchCount: 0,
+    lastTouchTime: null,
+    startTime: null,
+    lastFrameTime: 0,
+    fps: 0,
+
+    // Alert state
+    alertCooldown: false,
+    isTouching: false,
+    wasTouching: false,
+
+    // Audio context (lazy init)
+    audioContext: null,
+
+    // Settings
+    settings: {
+        sensitivity: 100,
+        alertCooldownMs: 3000,
+        soundEnabled: true,
+        notifyEnabled: false,
+        visualAlertEnabled: true,
+        showFaceMesh: true,
+        showHands: true,
+        showProximity: false
     }
 };
 
-function load(multiplier=0.75, stride=16) {
-    sourceVideo.width = sourceVideo.videoWidth;
-    sourceVideo.height = sourceVideo.videoHeight;
+// Face regions for nail-biting / face touch detection
+// These indices correspond to MediaPipe Face Mesh landmarks
+const FACE_REGIONS = {
+    // Mouth region - critical for nail biting detection
+    mouth: [0, 13, 14, 17, 37, 39, 40, 61, 78, 80, 81, 82, 84, 87, 88, 91, 95, 146, 178, 181, 185, 191, 267, 269, 270, 291, 308, 310, 311, 312, 314, 317, 318, 321, 324, 375, 402, 405, 409, 415],
+    // Nose region
+    nose: [1, 2, 4, 5, 6, 19, 94, 168, 195, 197, 236, 237, 238, 239, 240, 241, 242, 250, 456, 457, 458, 459, 460, 461, 462],
+    // Left eye region
+    leftEye: [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246],
+    // Right eye region
+    rightEye: [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398],
+    // Cheeks
+    leftCheek: [117, 118, 119, 120, 121, 126, 142, 203, 206, 216, 207, 187],
+    rightCheek: [346, 347, 348, 349, 350, 355, 371, 423, 426, 436, 427, 411],
+    // Chin
+    chin: [152, 175, 176, 148, 149, 150, 136, 169, 170, 171, 377, 378, 379, 365, 397, 288, 361, 323]
+};
 
-    // Canvas results for displaying masks
-    drawCanvas.width = sourceVideo.videoWidth;
-    drawCanvas.height = sourceVideo.videoHeight;
+// Hand fingertip indices (MediaPipe Hand Landmarks)
+const FINGERTIPS = [4, 8, 12, 16, 20]; // thumb, index, middle, ring, pinky
+const FINGER_NAMES = ['thumb', 'index', 'middle', 'ring', 'pinky'];
 
-    userMessage.innerText = "Waiting for Machine Learning model to load...";
+// ============================================================================
+// DOM Elements
+// ============================================================================
 
-    console.log(`loading BodyPix with multiplier ${multiplier} and stride ${stride}`);
+const elements = {
+    video: document.getElementById('videoElement'),
+    canvas: document.getElementById('overlayCanvas'),
+    welcomeContent: document.getElementById('welcomeContent'),
+    loadingState: document.getElementById('loadingState'),
+    startButton: document.getElementById('startButton'),
+    stopButton: document.getElementById('stopButton'),
+    resetStats: document.getElementById('resetStats'),
 
-    bodyPix.load({multiplier: multiplier, stride: stride, quantBytes: 4})
-        .then(net => predictLoop(net))
-        .catch(err => console.error(err));
+    // Status elements
+    detectionStatus: document.getElementById('detectionStatus'),
+    connectionStatus: document.getElementById('connectionStatus'),
+    statusText: document.getElementById('statusText'),
+    alertFlash: document.getElementById('alertFlash'),
+
+    // Stats elements
+    touchCount: document.getElementById('touchCount'),
+    lastTouch: document.getElementById('lastTouch'),
+    touchRate: document.getElementById('touchRate'),
+    fpsDisplay: document.getElementById('fpsDisplay'),
+
+    // Control elements
+    beepToggle: document.getElementById('beepToggle'),
+    notifyToggle: document.getElementById('notifyToggle'),
+    visualAlertToggle: document.getElementById('visualAlertToggle'),
+    alertCooldown: document.getElementById('alertCooldown'),
+    showLandmarks: document.getElementById('showLandmarks'),
+    showHands: document.getElementById('showHands'),
+    showProximity: document.getElementById('showProximity'),
+    sensitivitySlider: document.getElementById('sensitivitySlider'),
+    sensitivityValue: document.getElementById('sensitivityValue')
+};
+
+// ============================================================================
+// Initialization
+// ============================================================================
+
+async function initializeMediaPipe() {
+    try {
+        const vision = await FilesetResolver.forVisionTasks(
+            'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm'
+        );
+
+        // Initialize Face Landmarker
+        state.faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+            baseOptions: {
+                modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+                delegate: 'GPU'
+            },
+            runningMode: 'VIDEO',
+            numFaces: 1,
+            minFaceDetectionConfidence: 0.5,
+            minFacePresenceConfidence: 0.5,
+            minTrackingConfidence: 0.5,
+            outputFaceBlendshapes: false,
+            outputFacialTransformationMatrixes: false
+        });
+
+        // Initialize Hand Landmarker
+        state.handLandmarker = await HandLandmarker.createFromOptions(vision, {
+            baseOptions: {
+                modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+                delegate: 'GPU'
+            },
+            runningMode: 'VIDEO',
+            numHands: 2,
+            minHandDetectionConfidence: 0.5,
+            minHandPresenceConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        return true;
+    } catch (error) {
+        console.error('Failed to initialize MediaPipe:', error);
+        return false;
+    }
 }
 
-async function predictLoop(net) {
+async function initializeCamera() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                facingMode: 'user'
+            },
+            audio: false
+        });
 
-    stopPrediction = false;
+        elements.video.srcObject = stream;
 
-    let lastFaceArray = new Int32Array(sourceVideo.width * sourceVideo.height);
-    let alerts = 0;
-    let alertTimeout = false;
+        return new Promise((resolve) => {
+            elements.video.onloadedmetadata = () => {
+                elements.video.play();
 
-    enableDashboard(firstRun); // Show the dashboard
+                // Set canvas dimensions to match video
+                elements.canvas.width = elements.video.videoWidth;
+                elements.canvas.height = elements.video.videoHeight;
 
-    // Timer to update the face mask
-    let updateFace = true;
-    setInterval(() => {
-        updateFace = !updateFace;
-    }, 1000);
+                state.video = elements.video;
+                state.canvas = elements.canvas;
+                state.ctx = elements.canvas.getContext('2d');
+                state.drawingUtils = new DrawingUtils(state.ctx);
 
-    while (isPlaying && !stopPrediction) {
+                resolve(true);
+            };
+        });
+    } catch (error) {
+        console.error('Failed to access camera:', error);
+        alert('Unable to access camera. Please ensure you have granted camera permissions.');
+        return false;
+    }
+}
 
-        // BodyPix setup
-        const segmentPersonConfig = {
-            flipHorizontal: flipHorizontal,     // Flip for webcam
-            maxDetections: 1,                   // only look at one person in this model
-            scoreThreshold: 0.5,
-            segmentationThreshold: 0.6,         // default is 0.7
-        };
-        const segmentation = await net.segmentPersonParts(sourceVideo, segmentPersonConfig);
+// ============================================================================
+// Detection Loop
+// ============================================================================
 
+function detectFrame() {
+    if (!state.isRunning) return;
 
-        const faceThreshold = 0.9;
-        const touchThreshold = 0.01;
+    const now = performance.now();
 
-        const numPixels = segmentation.width * segmentation.height;
+    // Calculate FPS
+    if (state.lastFrameTime > 0) {
+        state.fps = 1000 / (now - state.lastFrameTime);
+    }
+    state.lastFrameTime = now;
 
+    // Get face and hand landmarks
+    const faceResults = state.faceLandmarker.detectForVideo(state.video, now);
+    const handResults = state.handLandmarker.detectForVideo(state.video, now);
 
-        // skip if noting is there
-        if (segmentation.allPoses[0] === undefined) {
-            // console.info("No segmentation data");
-            continue;
+    // Clear canvas
+    state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
+
+    // Mirror the canvas to match video
+    state.ctx.save();
+    state.ctx.scale(-1, 1);
+    state.ctx.translate(-state.canvas.width, 0);
+
+    // Process and draw results
+    const faceLandmarks = faceResults.faceLandmarks?.[0] || null;
+    const handLandmarksList = handResults.landmarks || [];
+
+    // Draw visualizations
+    if (faceLandmarks) {
+        if (state.settings.showFaceMesh) {
+            drawFaceMesh(faceLandmarks);
         }
-
-        // Draw the data to canvas
-        draw(segmentation);
-
-        // Verify there is a good quality face before doing anything
-        // I am assuming a consistent array order
-        let nose = segmentation.allPoses[0].keypoints[0].score > faceThreshold;
-        let leftEye = segmentation.allPoses[0].keypoints[1].score > faceThreshold;
-        let rightEye = segmentation.allPoses[0].keypoints[2].score > faceThreshold;
-
-
-        // Check for hands if there is a nose or eyes
-        if (nose && (leftEye || rightEye)) {
-
-            // Look for overlaps where the hand is and the face used to be
-
-            // Create an array of just face values
-            let faceArray = segmentation.data.map(val => {
-                if (val === 0 || val === 1) return val;
-                else return -1;
-            });
-
-            // Get the hand array
-            let handArray = segmentation.data.map(val => {
-                if (val === 10 || val === 11) return val;
-                else return -1;
-            });
-
-            let facePixels = 0;
-            let score = 0;
-
-            for (let x = 0; x < lastFaceArray.length; x++) {
-
-                // Count the number of face pixels
-                if (lastFaceArray[x] > -1)
-                    facePixels++;
-
-                // If the hand is overlapping where the face used to be
-                if (lastFaceArray[x] > -1 && handArray[x] > -1)
-                    score++;
-            }
-
-            let multiFaceArray = arrayToMatrix(faceArray, segmentation.width);
-            let multiHandArray = arrayToMatrix(handArray, segmentation.width);
-            let touchScore = touchingCheck(multiFaceArray, multiHandArray, 10);
-            score += touchScore;
-
-
-            // Update the old face according to the timer
-            if (updateFace)
-                lastFaceArray = faceArray;
-
-            updateStats(alertTimeout);
-
-            // Handle alerts
-            if (score > facePixels * touchThreshold && !alertTimeout) {
-                console.info(` numPixels: ${numPixels} \n facePixels: ${facePixels}\n score: ${score}, touchScore: ${touchScore}\n` +
-                    ` facePixels%: ${facePixels / numPixels}\n touch%: ${score / facePixels}`);
-                alerts++;
-                console.log("alert!!!", alerts);
-
-                // User alerts
-                if (beepToggle.checked)
-                    beep(350, 150, 0);
-                if (notifyToggle.checked)
-                    notify(`You touched your face! That's ${touches+1} times now`);
-
-                alertTimeout = true;
-
-                setTimeout(() => {
-                    console.log("resuming alerts");
-                    alertTimeout = false;
-                }, alertTimeoutEntry.value * 1000)
-            }
-
+        if (state.settings.showProximity) {
+            drawProximityZones(faceLandmarks);
         }
-
     }
 
+    if (handLandmarksList.length > 0 && state.settings.showHands) {
+        drawHands(handLandmarksList);
+    }
+
+    // Check for face touch
+    const touchDetected = checkFaceTouch(faceLandmarks, handLandmarksList);
+
+    // Handle touch state changes
+    handleTouchState(touchDetected, faceLandmarks !== null);
+
+    state.ctx.restore();
+
+    // Update UI
+    updateUI();
+
+    // Schedule next frame
+    state.animationId = requestAnimationFrame(detectFrame);
 }
 
-// Checks if there is a face pixel above, below, left or right to this pixel
-function touchingCheck(matrix1, matrix2, padding) {
-    let count = 0;
-    for (let y = padding; y < matrix1.length - padding; y++)
-        for (let x = padding; x < matrix1[0].length - padding; x++) {
-            if (matrix1[y][x] > -1) {
-                for (let p = 0; p < padding; p++) {
-                    // if the hand is left or right, above or below the current face segment
-                    if (matrix2[y][x - p] > -1 || matrix2[y][x + p] > -1 ||
-                        matrix2[y - p][x] > -1 || matrix2[y + p][x] > -1) {
-                        count++;
+// ============================================================================
+// Face Touch Detection
+// ============================================================================
+
+function checkFaceTouch(faceLandmarks, handLandmarksList) {
+    if (!faceLandmarks || handLandmarksList.length === 0) {
+        return false;
+    }
+
+    const videoWidth = state.canvas.width;
+    const videoHeight = state.canvas.height;
+
+    // Convert face landmarks to pixel coordinates
+    const facePoints = {};
+    for (const [region, indices] of Object.entries(FACE_REGIONS)) {
+        facePoints[region] = indices.map(idx => {
+            const lm = faceLandmarks[idx];
+            return {
+                x: lm.x * videoWidth,
+                y: lm.y * videoHeight,
+                z: lm.z * videoWidth
+            };
+        });
+    }
+
+    // Check each hand
+    for (const handLandmarks of handLandmarksList) {
+        // Check fingertips
+        for (let i = 0; i < FINGERTIPS.length; i++) {
+            const tipIdx = FINGERTIPS[i];
+            const tip = handLandmarks[tipIdx];
+            const tipPoint = {
+                x: tip.x * videoWidth,
+                y: tip.y * videoHeight,
+                z: tip.z * videoWidth
+            };
+
+            // Check against each face region
+            for (const [region, points] of Object.entries(facePoints)) {
+                const minDist = getMinDistance(tipPoint, points);
+
+                // Base threshold adjusted by sensitivity
+                // Lower sensitivity = larger threshold = less sensitive
+                const baseThreshold = 40; // pixels
+                const sensitivityMultiplier = state.settings.sensitivity / 100;
+                const threshold = baseThreshold / sensitivityMultiplier;
+
+                if (minDist < threshold) {
+                    // Additional z-depth check to reduce false positives
+                    // Hand should be roughly at same depth or closer than face
+                    const avgFaceZ = points.reduce((sum, p) => sum + p.z, 0) / points.length;
+                    const zDiff = tipPoint.z - avgFaceZ;
+
+                    // If hand is significantly behind face, ignore
+                    if (zDiff < 50) { // Allow some tolerance
+                        return true;
                     }
                 }
             }
         }
-    return count
+    }
+
+    return false;
 }
 
-// Use the bodyPix draw API's
-function draw(personSegmentation) {
-
-    if (showMaskToggle.checked) {
-        let targetSegmentation = personSegmentation;
-
-        // Draw a mask of the body segments - useful for debugging
-
-        // Just show the face and hand parts
-        targetSegmentation.data = personSegmentation.data.map(val => {
-            if (val !== 0 && val !== 1 && val !== 10 && val !== 11)
-                return -1;
-            else
-                return val;
-        });
-
-        const coloredPartImage = bodyPix.toColoredPartMask(targetSegmentation);
-        const opacity = 0.7;
-        const maskBlurAmount = 0;
-        bodyPix.drawMask(
-            drawCanvas, sourceVideo, coloredPartImage, opacity, maskBlurAmount,
-            flipHorizontal);
-
+function getMinDistance(point, targets) {
+    let minDist = Infinity;
+    for (const target of targets) {
+        const dx = point.x - target.x;
+        const dy = point.y - target.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < minDist) {
+            minDist = dist;
+        }
     }
-
-    // drawMask clears the canvas, drawKeypoints doesn't
-    if (showMaskToggle.checked === false) {
-        // bodyPix.drawMask redraws the canvas. Clear with not
-        drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-    }
-
-    // Show dots from pose detection
-    if (showPointsToggle.checked) {
-        personSegmentation.allPoses.forEach(pose => {
-            if (flipHorizontal) {
-                pose = bodyPix.flipPoseHorizontal(pose, personSegmentation.width);
-            }
-            drawKeypoints(pose.keypoints, 0.9, drawCtx);
-        });
-    }
-
+    return minDist;
 }
 
-// Draw dots
-function drawKeypoints(keypoints, minConfidence, ctx, color = 'aqua') {
-    for (let i = 0; i < keypoints.length; i++) {
-        const keypoint = keypoints[i];
+// ============================================================================
+// Touch State Handling
+// ============================================================================
 
-        if (keypoint.score < minConfidence) {
-            continue;
+function handleTouchState(touchDetected, faceVisible) {
+    state.wasTouching = state.isTouching;
+    state.isTouching = touchDetected;
+
+    // Update status display
+    updateDetectionStatus(faceVisible, touchDetected);
+
+    // Trigger alert on new touch
+    if (touchDetected && !state.wasTouching && !state.alertCooldown) {
+        triggerAlert();
+    }
+}
+
+function triggerAlert() {
+    state.touchCount++;
+    state.lastTouchTime = Date.now();
+
+    console.log(`Face touch detected! Count: ${state.touchCount}`);
+
+    // Sound alert
+    if (state.settings.soundEnabled) {
+        playBeep(440, 150);
+    }
+
+    // Visual alert
+    if (state.settings.visualAlertEnabled) {
+        elements.alertFlash.classList.add('active');
+        setTimeout(() => {
+            elements.alertFlash.classList.remove('active');
+        }, 400);
+    }
+
+    // Browser notification
+    if (state.settings.notifyEnabled) {
+        sendNotification(`Face touch detected! Count: ${state.touchCount}`);
+    }
+
+    // Set cooldown
+    state.alertCooldown = true;
+    setTimeout(() => {
+        state.alertCooldown = false;
+    }, state.settings.alertCooldownMs);
+}
+
+// ============================================================================
+// Drawing Functions
+// ============================================================================
+
+function drawFaceMesh(landmarks) {
+    // Draw face mesh connectors
+    state.ctx.strokeStyle = 'rgba(14, 165, 233, 0.3)';
+    state.ctx.lineWidth = 1;
+
+    // Draw key facial features with different colors
+    const faceOvalColor = 'rgba(14, 165, 233, 0.5)';
+    const lipsColor = 'rgba(239, 68, 68, 0.5)';
+    const eyeColor = 'rgba(34, 197, 94, 0.5)';
+
+    // Face oval
+    drawLandmarkConnections(landmarks, FaceLandmarker.FACE_LANDMARKS_FACE_OVAL, faceOvalColor);
+
+    // Lips
+    drawLandmarkConnections(landmarks, FaceLandmarker.FACE_LANDMARKS_LIPS, lipsColor);
+
+    // Eyes
+    drawLandmarkConnections(landmarks, FaceLandmarker.FACE_LANDMARKS_LEFT_EYE, eyeColor);
+    drawLandmarkConnections(landmarks, FaceLandmarker.FACE_LANDMARKS_RIGHT_EYE, eyeColor);
+
+    // Eyebrows
+    drawLandmarkConnections(landmarks, FaceLandmarker.FACE_LANDMARKS_LEFT_EYEBROW, eyeColor);
+    drawLandmarkConnections(landmarks, FaceLandmarker.FACE_LANDMARKS_RIGHT_EYEBROW, eyeColor);
+}
+
+function drawLandmarkConnections(landmarks, connections, color) {
+    if (!connections) return;
+
+    state.ctx.strokeStyle = color;
+    state.ctx.lineWidth = 2;
+
+    for (const connection of connections) {
+        const start = landmarks[connection.start];
+        const end = landmarks[connection.end];
+
+        state.ctx.beginPath();
+        state.ctx.moveTo(start.x * state.canvas.width, start.y * state.canvas.height);
+        state.ctx.lineTo(end.x * state.canvas.width, end.y * state.canvas.height);
+        state.ctx.stroke();
+    }
+}
+
+function drawHands(handLandmarksList) {
+    for (const landmarks of handLandmarksList) {
+        // Draw connections
+        state.ctx.strokeStyle = state.isTouching ? 'rgba(239, 68, 68, 0.8)' : 'rgba(34, 197, 94, 0.8)';
+        state.ctx.lineWidth = 2;
+
+        // Draw hand skeleton
+        const connections = HandLandmarker.HAND_CONNECTIONS;
+        for (const connection of connections) {
+            const start = landmarks[connection.start];
+            const end = landmarks[connection.end];
+
+            state.ctx.beginPath();
+            state.ctx.moveTo(start.x * state.canvas.width, start.y * state.canvas.height);
+            state.ctx.lineTo(end.x * state.canvas.width, end.y * state.canvas.height);
+            state.ctx.stroke();
         }
 
-        const {y, x} = keypoint.position;
-        ctx.beginPath();
-        ctx.arc(x, y, 4, 0, 2 * Math.PI);
-        ctx.fillStyle = color;
-        ctx.fill();
+        // Draw landmarks
+        for (let i = 0; i < landmarks.length; i++) {
+            const lm = landmarks[i];
+            const x = lm.x * state.canvas.width;
+            const y = lm.y * state.canvas.height;
 
+            // Highlight fingertips
+            const isFingertip = FINGERTIPS.includes(i);
+            const radius = isFingertip ? 6 : 3;
+            const color = isFingertip
+                ? (state.isTouching ? 'rgba(239, 68, 68, 1)' : 'rgba(245, 158, 11, 1)')
+                : 'rgba(34, 197, 94, 0.8)';
+
+            state.ctx.beginPath();
+            state.ctx.arc(x, y, radius, 0, 2 * Math.PI);
+            state.ctx.fillStyle = color;
+            state.ctx.fill();
+        }
     }
 }
 
-// Helper function to convert an arrow into a matrix for easier pixel proximity functions
-function arrayToMatrix(arr, rowLength) {
-    let newArray = [];
+function drawProximityZones(faceLandmarks) {
+    const videoWidth = state.canvas.width;
+    const videoHeight = state.canvas.height;
 
-    // Check
-    if (arr.length % rowLength > 0 || rowLength < 1) {
-        console.log("array not divisible by rowLength ", arr, rowLength);
-        return
-    }
+    // Draw proximity zones around key face regions
+    const zones = [
+        { region: 'mouth', color: 'rgba(239, 68, 68, 0.15)' },
+        { region: 'nose', color: 'rgba(245, 158, 11, 0.15)' },
+        { region: 'leftEye', color: 'rgba(14, 165, 233, 0.15)' },
+        { region: 'rightEye', color: 'rgba(14, 165, 233, 0.15)' }
+    ];
 
-    let rows = arr.length / rowLength;
-    for (let x = 0; x < rows; x++) {
-        let b = arr.slice(x * rowLength, x * rowLength + rowLength);
-        newArray.push(b);
+    const threshold = 40 / (state.settings.sensitivity / 100);
+
+    for (const { region, color } of zones) {
+        const indices = FACE_REGIONS[region];
+        const points = indices.map(idx => ({
+            x: faceLandmarks[idx].x * videoWidth,
+            y: faceLandmarks[idx].y * videoHeight
+        }));
+
+        // Draw expanded region
+        state.ctx.fillStyle = color;
+        state.ctx.beginPath();
+
+        // Find bounding box and expand it
+        const xs = points.map(p => p.x);
+        const ys = points.map(p => p.y);
+        const minX = Math.min(...xs) - threshold;
+        const maxX = Math.max(...xs) + threshold;
+        const minY = Math.min(...ys) - threshold;
+        const maxY = Math.max(...ys) + threshold;
+
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        const radiusX = (maxX - minX) / 2;
+        const radiusY = (maxY - minY) / 2;
+
+        state.ctx.ellipse(centerX, centerY, radiusX, radiusY, 0, 0, 2 * Math.PI);
+        state.ctx.fill();
     }
-    return newArray;
 }
+
+// ============================================================================
+// UI Updates
+// ============================================================================
+
+function updateUI() {
+    // Update FPS
+    elements.fpsDisplay.textContent = Math.round(state.fps);
+
+    // Update touch count
+    elements.touchCount.textContent = state.touchCount;
+
+    // Update last touch time
+    if (state.lastTouchTime) {
+        const secAgo = Math.round((Date.now() - state.lastTouchTime) / 1000);
+        elements.lastTouch.textContent = `${secAgo}s ago`;
+    }
+
+    // Update touch rate
+    if (state.startTime) {
+        const hoursElapsed = (Date.now() - state.startTime) / (1000 * 60 * 60);
+        if (hoursElapsed > 0) {
+            const rate = state.touchCount / hoursElapsed;
+            elements.touchRate.textContent = rate.toFixed(1);
+        }
+    }
+}
+
+function updateDetectionStatus(faceVisible, touching) {
+    const statusEl = elements.detectionStatus;
+    const textEl = statusEl.querySelector('.status-text');
+
+    statusEl.classList.remove('warning', 'danger');
+
+    if (!faceVisible) {
+        textEl.textContent = 'No face detected';
+        statusEl.classList.add('warning');
+    } else if (touching) {
+        textEl.textContent = 'Face touch detected!';
+        statusEl.classList.add('danger');
+    } else {
+        textEl.textContent = 'Monitoring...';
+    }
+}
+
+// ============================================================================
+// Audio
+// ============================================================================
+
+function playBeep(frequency, duration) {
+    try {
+        if (!state.audioContext) {
+            state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+
+        const oscillator = state.audioContext.createOscillator();
+        const gainNode = state.audioContext.createGain();
+
+        oscillator.connect(gainNode);
+        gainNode.connect(state.audioContext.destination);
+
+        oscillator.frequency.value = frequency;
+        oscillator.type = 'sine';
+
+        gainNode.gain.setValueAtTime(0.3, state.audioContext.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, state.audioContext.currentTime + duration / 1000);
+
+        oscillator.start();
+        oscillator.stop(state.audioContext.currentTime + duration / 1000);
+    } catch (error) {
+        console.warn('Audio playback failed:', error);
+    }
+}
+
+// ============================================================================
+// Notifications
+// ============================================================================
+
+async function requestNotificationPermission() {
+    if (!('Notification' in window)) {
+        console.warn('Notifications not supported');
+        return false;
+    }
+
+    if (Notification.permission === 'granted') {
+        return true;
+    }
+
+    if (Notification.permission !== 'denied') {
+        const permission = await Notification.requestPermission();
+        return permission === 'granted';
+    }
+
+    return false;
+}
+
+function sendNotification(message) {
+    if (Notification.permission === 'granted') {
+        new Notification('Face Touch Monitor', {
+            body: message,
+            icon: 'favicon.ico',
+            silent: true
+        });
+    }
+}
+
+// ============================================================================
+// Controls & Event Handlers
+// ============================================================================
+
+function setupEventListeners() {
+    // Start button
+    elements.startButton.addEventListener('click', startMonitoring);
+
+    // Stop button
+    elements.stopButton.addEventListener('click', stopMonitoring);
+
+    // Reset stats
+    elements.resetStats.addEventListener('click', resetStatistics);
+
+    // Toggle controls
+    elements.beepToggle.addEventListener('change', (e) => {
+        state.settings.soundEnabled = e.target.checked;
+    });
+
+    elements.notifyToggle.addEventListener('change', async (e) => {
+        if (e.target.checked) {
+            const granted = await requestNotificationPermission();
+            if (!granted) {
+                e.target.checked = false;
+                alert('Notification permission was denied. Please enable it in your browser settings.');
+                return;
+            }
+        }
+        state.settings.notifyEnabled = e.target.checked;
+    });
+
+    elements.visualAlertToggle.addEventListener('change', (e) => {
+        state.settings.visualAlertEnabled = e.target.checked;
+    });
+
+    elements.alertCooldown.addEventListener('change', (e) => {
+        const value = parseInt(e.target.value, 10);
+        if (value >= 1 && value <= 30) {
+            state.settings.alertCooldownMs = value * 1000;
+        }
+    });
+
+    // Visualization controls
+    elements.showLandmarks.addEventListener('change', (e) => {
+        state.settings.showFaceMesh = e.target.checked;
+    });
+
+    elements.showHands.addEventListener('change', (e) => {
+        state.settings.showHands = e.target.checked;
+    });
+
+    elements.showProximity.addEventListener('change', (e) => {
+        state.settings.showProximity = e.target.checked;
+    });
+
+    // Sensitivity slider
+    elements.sensitivitySlider.addEventListener('input', (e) => {
+        state.settings.sensitivity = parseInt(e.target.value, 10);
+        elements.sensitivityValue.textContent = `${state.settings.sensitivity}%`;
+    });
+}
+
+async function startMonitoring() {
+    // Show loading state
+    elements.welcomeContent.classList.add('hidden');
+    elements.loadingState.classList.add('visible');
+
+    // Initialize MediaPipe
+    const mpInit = await initializeMediaPipe();
+    if (!mpInit) {
+        elements.loadingState.classList.remove('visible');
+        elements.welcomeContent.classList.remove('hidden');
+        alert('Failed to initialize AI models. Please refresh and try again.');
+        return;
+    }
+
+    // Initialize camera
+    const camInit = await initializeCamera();
+    if (!camInit) {
+        elements.loadingState.classList.remove('visible');
+        elements.welcomeContent.classList.remove('hidden');
+        return;
+    }
+
+    // Hide loading, show video
+    elements.loadingState.classList.remove('visible');
+
+    // Update state
+    state.isRunning = true;
+    state.startTime = Date.now();
+    state.touchCount = 0;
+    state.lastTouchTime = null;
+
+    // Update UI
+    elements.connectionStatus.classList.add('active');
+    elements.statusText.textContent = 'Active';
+    elements.detectionStatus.classList.add('visible');
+
+    // Start detection loop
+    detectFrame();
+}
+
+function stopMonitoring() {
+    state.isRunning = false;
+
+    // Cancel animation frame
+    if (state.animationId) {
+        cancelAnimationFrame(state.animationId);
+        state.animationId = null;
+    }
+
+    // Stop camera
+    if (elements.video.srcObject) {
+        elements.video.srcObject.getTracks().forEach(track => track.stop());
+        elements.video.srcObject = null;
+    }
+
+    // Clear canvas
+    if (state.ctx) {
+        state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
+    }
+
+    // Update UI
+    elements.connectionStatus.classList.remove('active');
+    elements.statusText.textContent = 'Inactive';
+    elements.detectionStatus.classList.remove('visible');
+    elements.welcomeContent.classList.remove('hidden');
+}
+
+function resetStatistics() {
+    state.touchCount = 0;
+    state.lastTouchTime = null;
+    state.startTime = Date.now();
+
+    elements.touchCount.textContent = '0';
+    elements.lastTouch.textContent = '--';
+    elements.touchRate.textContent = '0.0';
+}
+
+// ============================================================================
+// Initialize
+// ============================================================================
+
+setupEventListeners();

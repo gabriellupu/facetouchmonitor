@@ -1,108 +1,207 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Face Touch Monitor - get alerts when you touch your face</title>
-    <link rel="shortcut icon" type="image/x-icon" href="favicon.ico" />
-    <link rel="stylesheet" type="text/css" href="style.css">
-    <!-- Load TensorFlow.js -->
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.2"></script>
-    <!-- Load BodyPix -->
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-pix@2.0"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Roboto&display=swap" rel="stylesheet"> 
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Face Touch Monitor - AI-Powered Detection</title>
+    <link rel="shortcut icon" type="image/x-icon" href="favicon.ico">
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
-
 <body>
-<div id="main">
-    <canvas></canvas>
-    <video id="myVid" autoplay playsinline></video>
-    <div id="content">
-        <h1>Face Touch Monitor</h1>
-        <h4>See how often you touch your face and learn to stop! </h4>
-        <p>
-            In addition to washing your hands often,
-            the <a href="https://www.cdc.gov/coronavirus/2019-ncov/prepare/prevention.html">CDC</a> recommends that you
-            avoid touching your eyes, nose, and mouth with unwashed hands. This can be hard to do without a reminder.
-        </p>
-        <p>
-            This page uses your webcam and computer vision to count when you touch your face.
-            Set beep alerts or get a browser notification when you do.
-            The reminders can you train yourself to stop accidental face touching.
-            Just keep this page running in the background as you use your computer.
-        </p>
-        <p>
-            Machine learning on your image is done 100% locally in your browser.
-            No information is shared externally.
-        </p>
-        <button id="start">Start monitoring</button>
-        <div id="usageNoteMain">
-        <h4>Usage notes</h4>
-        <p> This is a quick hack that we'll improve.
-            Keep this tab in the foreground for the best performance.
-            It has no depth perception, so a hand in front of your face will set it off.
-            This works best on Chrome and has been tested in the new Edge and Firefox.
-            I haven't been able to make it work with Safari yet.
-            It usually does not detect as well if you are very close to the camera.
-            It will not work well on slower devices or mobile.</p>
-        </div>
+    <div class="app-container">
+        <!-- Main Video Area -->
+        <main class="video-section">
+            <div class="video-wrapper" id="videoWrapper">
+                <video id="videoElement" autoplay playsinline muted></video>
+                <canvas id="overlayCanvas"></canvas>
+
+                <!-- Detection Status Overlay -->
+                <div class="detection-overlay" id="detectionOverlay">
+                    <div class="detection-status" id="detectionStatus">
+                        <span class="status-dot"></span>
+                        <span class="status-text">Ready</span>
+                    </div>
+                </div>
+
+                <!-- Alert Flash -->
+                <div class="alert-flash" id="alertFlash"></div>
+            </div>
+
+            <!-- Welcome Content (shown before start) -->
+            <section class="welcome-content" id="welcomeContent">
+                <h1>Face Touch Monitor</h1>
+                <p class="tagline">Train yourself to stop touching your face with AI-powered detection</p>
+
+                <div class="features">
+                    <div class="feature">
+                        <span class="feature-icon">&#128064;</span>
+                        <span>Real-time Detection</span>
+                    </div>
+                    <div class="feature">
+                        <span class="feature-icon">&#128274;</span>
+                        <span>100% Private</span>
+                    </div>
+                    <div class="feature">
+                        <span class="feature-icon">&#9889;</span>
+                        <span>60+ FPS</span>
+                    </div>
+                </div>
+
+                <p class="description">
+                    The CDC recommends avoiding touching your eyes, nose, and mouth.
+                    This app uses MediaPipe's advanced AI to detect when your hands approach your face,
+                    helping you build better habits. All processing happens locally in your browser.
+                </p>
+
+                <button class="btn-primary" id="startButton">
+                    <span>Start Monitoring</span>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                    </svg>
+                </button>
+
+                <p class="privacy-note">
+                    Your camera feed never leaves your device. No data is collected or transmitted.
+                </p>
+            </section>
+
+            <!-- Loading State -->
+            <div class="loading-state" id="loadingState">
+                <div class="loader-ring"></div>
+                <p>Loading AI models...</p>
+                <p class="loader-subtitle">This may take a moment on first load</p>
+            </div>
+        </main>
+
+        <!-- Dashboard Sidebar -->
+        <aside class="dashboard" id="dashboard">
+            <div class="dashboard-content">
+                <header class="dashboard-header">
+                    <h2>Dashboard</h2>
+                    <div class="connection-status" id="connectionStatus">
+                        <span class="pulse"></span>
+                        <span id="statusText">Inactive</span>
+                    </div>
+                </header>
+
+                <!-- Statistics Section -->
+                <section class="stats-section">
+                    <h3>Statistics</h3>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <span class="stat-value" id="touchCount">0</span>
+                            <span class="stat-label">Face Touches</span>
+                        </div>
+                        <div class="stat-card">
+                            <span class="stat-value" id="lastTouch">--</span>
+                            <span class="stat-label">Last Touch</span>
+                        </div>
+                        <div class="stat-card">
+                            <span class="stat-value" id="touchRate">0.0</span>
+                            <span class="stat-label">Per Hour</span>
+                        </div>
+                        <div class="stat-card">
+                            <span class="stat-value" id="fpsDisplay">--</span>
+                            <span class="stat-label">FPS</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Controls Section -->
+                <section class="controls-section">
+                    <h3>Alerts</h3>
+
+                    <div class="control-group">
+                        <label class="toggle-control">
+                            <input type="checkbox" id="beepToggle" checked>
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-label">Sound alert</span>
+                        </label>
+
+                        <label class="toggle-control">
+                            <input type="checkbox" id="notifyToggle">
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-label">Browser notification</span>
+                        </label>
+
+                        <label class="toggle-control">
+                            <input type="checkbox" id="visualAlertToggle" checked>
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-label">Visual flash</span>
+                        </label>
+                    </div>
+
+                    <div class="input-group">
+                        <label for="alertCooldown">Alert cooldown</label>
+                        <div class="input-with-unit">
+                            <input type="number" id="alertCooldown" value="3" min="1" max="30">
+                            <span class="unit">seconds</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Visualization Section -->
+                <section class="controls-section">
+                    <h3>Visualization</h3>
+
+                    <div class="control-group">
+                        <label class="toggle-control">
+                            <input type="checkbox" id="showLandmarks" checked>
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-label">Show face mesh</span>
+                        </label>
+
+                        <label class="toggle-control">
+                            <input type="checkbox" id="showHands" checked>
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-label">Show hand tracking</span>
+                        </label>
+
+                        <label class="toggle-control">
+                            <input type="checkbox" id="showProximity">
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-label">Show proximity zones</span>
+                        </label>
+                    </div>
+                </section>
+
+                <!-- Sensitivity Section -->
+                <section class="controls-section">
+                    <h3>Sensitivity</h3>
+                    <div class="slider-control">
+                        <input type="range" id="sensitivitySlider" min="50" max="200" value="100">
+                        <div class="slider-labels">
+                            <span>Less Sensitive</span>
+                            <span id="sensitivityValue">100%</span>
+                            <span>More Sensitive</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Actions -->
+                <section class="actions-section">
+                    <button class="btn-secondary" id="resetStats">
+                        Reset Statistics
+                    </button>
+                    <button class="btn-danger" id="stopButton">
+                        Stop Monitoring
+                    </button>
+                </section>
+
+                <!-- Info -->
+                <footer class="dashboard-footer">
+                    <p>Powered by <a href="https://ai.google.dev/edge/mediapipe/solutions/guide" target="_blank" rel="noopener">MediaPipe</a></p>
+                    <p>Built by <a href="https://webrtcHacks.com" target="_blank" rel="noopener">webrtcHacks</a></p>
+                    <p><a href="https://github.com/webrtchacks/facetouchmonitor" target="_blank" rel="noopener">View on GitHub</a></p>
+                </footer>
+            </div>
+        </aside>
     </div>
-</div>
-<div id="loader"></div> 
-<div id="dashboard">
-    <div id="dashboardContent">
-        <h3>Statistics</h3>
-        <p>Status: <span id="userMessage">Click to the left to activate your webcam.</span></p>
-        <div id="statsDiv" hidden>
-            <p>Face touches:  <span id="touches"></span></p>
-            <p>Last touch:  <span id="lastTouch"></span></p>
-            <p>Touch rate per hour: <span id="perHour"></span></p>
-            <p>FPS: <span id="fps"></span></p>
-        </div>
-        <h3>Controls</h3>
-        <div id="controls">
-            <label for="alertTimeOut">Time between alerts (s)</label>
-            <input type="text" size=4 id="alertTimeOut" name="alertTimeOut" value="5"><br>
 
-            <input type="checkbox" id="beepToggle" name="beepToggle" value="beepToggle" checked >
-            <label for="beepToggle">Beep on touch</label><br>
-
-            <input type="checkbox" id="notifyToggle" name="notifyToggle" value="notifyToggle" >
-            <label for="notifyToggle">Browser notification on touch</label><br>
-
-            <input type="checkbox" id="showMask" name="showMask" value="showMask">
-            <label for="showMask">Display the segmentation mask</label><br>
-
-            <input type="checkbox" id="showPoints" name="showPoints" value="showPoints">
-            <label for="showPoints">Display detection points</label><br>
-
-            <p>Trade off speed for accuracy:</p>
-            <button id="highSpeed" disabled>Faster</button>
-            <button id="normalSpeed" disabled>Normal</button>
-            <button id="lowerSpeed" disabled>More accurate</button>
-            <button id="lowSpeed" disabled>Most accurate</button>
-
-
-            <button id="reset">Exit / Restart</button>
-            <div id="usageNoteSide"></div>
-        </div>
-    </div>
-</div>
-<div id="credits">
-<div id="creditContent">
-    <p>Brought to you by <a href="https://webrtcHacks.com">webrtcHacks</a>.
-        Powered by <a href="https://github.com/tensorflow/tfjs">tensorflow.js</a>.<br>
-        See the full source code on <a href="https://github.com/webrtchacks/facetouchmonitor">github</a>.
-        Read the post about  <a href="https://webrtchacks">how it works</a>.
-    </p>
-</div>
-</div>
-<script src="ui-helper.js"></script>
-<script src="detect.js"></script>
-
-<!-- If this is popular I will put more effort into it -->
-<script src="/__/firebase/7.11.0/firebase-app.js"></script>
-<script src="/__/firebase/7.11.0/firebase-analytics.js"></script>
-<script src="/__/firebase/init.js"></script>
-<script>firebase.analytics();</script>
+    <!-- Scripts -->
+    <script type="module" src="detect.js"></script>
 </body>
 </html>
