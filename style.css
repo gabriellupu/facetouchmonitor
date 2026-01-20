@@ -454,6 +454,39 @@ body {
     color: var(--color-text);
 }
 
+/* Section Hint */
+.section-hint {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-dim);
+    margin-bottom: var(--space-md);
+}
+
+/* Zone-specific toggle colors */
+.zone-hint {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-dim);
+}
+
+.toggle-control input:checked + .toggle-slider.zone-mouth {
+    background: #ef4444;
+}
+
+.toggle-control input:checked + .toggle-slider.zone-nose {
+    background: #f59e0b;
+}
+
+.toggle-control input:checked + .toggle-slider.zone-eyes {
+    background: #0ea5e9;
+}
+
+.toggle-control input:checked + .toggle-slider.zone-cheeks {
+    background: #8b5cf6;
+}
+
+.toggle-control input:checked + .toggle-slider.zone-chin {
+    background: #22c55e;
+}
+
 /* Input Group */
 .input-group {
     margin-top: var(--space-md);
