@@ -642,16 +642,59 @@ body {
     font-size: var(--font-size-xs);
     color: var(--color-text-dim);
     text-align: center;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    align-items: center;
 }
 
 .dashboard-footer p {
-    margin-bottom: var(--space-xs);
+    margin: 0;
 }
 
 .dashboard-footer a {
     color: var(--color-text-muted);
     text-decoration: none;
     transition: color var(--transition-fast);
+}
+
+/* GitHub Badge */
+.github-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    color: var(--color-text-muted);
+    transition: all var(--transition-fast);
+}
+
+.github-badge:hover {
+    background: var(--color-bg-lighter);
+    color: var(--color-text);
+    border-color: var(--color-text-dim);
+}
+
+.github-badge svg {
+    flex-shrink: 0;
+}
+
+.author-credit {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-dim);
+}
+
+.author-credit a {
+    color: var(--color-primary-light);
+    font-weight: 500;
+}
+
+.author-credit a:hover {
+    text-decoration: underline;
 }
 
 .dashboard-footer a:hover {
