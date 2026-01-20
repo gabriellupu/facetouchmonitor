@@ -43,8 +43,21 @@ const state = {
         visualAlertEnabled: true,
         showFaceMesh: true,
         showHands: true,
-        showProximity: false
-    }
+        showProximity: false,
+        // Detection zones - which regions trigger alerts
+        zones: {
+            mouth: true,
+            nose: true,
+            leftEye: true,
+            rightEye: true,
+            leftCheek: false,
+            rightCheek: false,
+            chin: false
+        }
+    },
+
+    // Last touched zone (for status display)
+    lastTouchedZone: null
 };
 
 // Face regions for nail-biting / face touch detection
@@ -103,7 +116,14 @@ const elements = {
     showHands: document.getElementById('showHands'),
     showProximity: document.getElementById('showProximity'),
     sensitivitySlider: document.getElementById('sensitivitySlider'),
-    sensitivityValue: document.getElementById('sensitivityValue')
+    sensitivityValue: document.getElementById('sensitivityValue'),
+
+    // Zone toggles
+    zoneMouth: document.getElementById('zoneMouth'),
+    zoneNose: document.getElementById('zoneNose'),
+    zoneEyes: document.getElementById('zoneEyes'),
+    zoneCheeks: document.getElementById('zoneCheeks'),
+    zoneChin: document.getElementById('zoneChin')
 };
 
 // ============================================================================
@@ -253,23 +273,43 @@ function detectFrame() {
 
 function checkFaceTouch(faceLandmarks, handLandmarksList) {
     if (!faceLandmarks || handLandmarksList.length === 0) {
+        state.lastTouchedZone = null;
         return false;
     }
 
     const videoWidth = state.canvas.width;
     const videoHeight = state.canvas.height;
 
-    // Convert face landmarks to pixel coordinates
+    // Determine which zones are enabled based on settings
+    const enabledZones = [];
+    if (state.settings.zones.mouth) enabledZones.push('mouth');
+    if (state.settings.zones.nose) enabledZones.push('nose');
+    if (state.settings.zones.leftEye) enabledZones.push('leftEye');
+    if (state.settings.zones.rightEye) enabledZones.push('rightEye');
+    if (state.settings.zones.leftCheek) enabledZones.push('leftCheek');
+    if (state.settings.zones.rightCheek) enabledZones.push('rightCheek');
+    if (state.settings.zones.chin) enabledZones.push('chin');
+
+    // If no zones enabled, no detection
+    if (enabledZones.length === 0) {
+        state.lastTouchedZone = null;
+        return false;
+    }
+
+    // Convert face landmarks to pixel coordinates for enabled zones only
     const facePoints = {};
-    for (const [region, indices] of Object.entries(FACE_REGIONS)) {
-        facePoints[region] = indices.map(idx => {
-            const lm = faceLandmarks[idx];
-            return {
-                x: lm.x * videoWidth,
-                y: lm.y * videoHeight,
-                z: lm.z * videoWidth
-            };
-        });
+    for (const region of enabledZones) {
+        const indices = FACE_REGIONS[region];
+        if (indices) {
+            facePoints[region] = indices.map(idx => {
+                const lm = faceLandmarks[idx];
+                return {
+                    x: lm.x * videoWidth,
+                    y: lm.y * videoHeight,
+                    z: lm.z * videoWidth
+                };
+            });
+        }
     }
 
     // Check each hand
@@ -284,7 +324,7 @@ function checkFaceTouch(faceLandmarks, handLandmarksList) {
                 z: tip.z * videoWidth
             };
 
-            // Check against each face region
+            // Check against each enabled face region
             for (const [region, points] of Object.entries(facePoints)) {
                 const minDist = getMinDistance(tipPoint, points);
 
@@ -302,6 +342,7 @@ function checkFaceTouch(faceLandmarks, handLandmarksList) {
 
                     // If hand is significantly behind face, ignore
                     if (zDiff < 50) { // Allow some tolerance
+                        state.lastTouchedZone = region;
                         return true;
                     }
                 }
@@ -309,7 +350,22 @@ function checkFaceTouch(faceLandmarks, handLandmarksList) {
         }
     }
 
+    state.lastTouchedZone = null;
     return false;
+}
+
+// Helper to get display name for a zone
+function getZoneDisplayName(zone) {
+    const names = {
+        mouth: 'Mouth',
+        nose: 'Nose',
+        leftEye: 'Left Eye',
+        rightEye: 'Right Eye',
+        leftCheek: 'Left Cheek',
+        rightCheek: 'Right Cheek',
+        chin: 'Chin'
+    };
+    return names[zone] || zone;
 }
 
 function getMinDistance(point, targets) {
@@ -346,7 +402,8 @@ function triggerAlert() {
     state.touchCount++;
     state.lastTouchTime = Date.now();
 
-    console.log(`Face touch detected! Count: ${state.touchCount}`);
+    const zoneName = state.lastTouchedZone ? getZoneDisplayName(state.lastTouchedZone) : 'Face';
+    console.log(`${zoneName} touch detected! Count: ${state.touchCount}`);
 
     // Sound alert
     if (state.settings.soundEnabled) {
@@ -363,7 +420,7 @@ function triggerAlert() {
 
     // Browser notification
     if (state.settings.notifyEnabled) {
-        sendNotification(`Face touch detected! Count: ${state.touchCount}`);
+        sendNotification(`${zoneName} touch detected! Count: ${state.touchCount}`);
     }
 
     // Set cooldown
@@ -462,18 +519,26 @@ function drawProximityZones(faceLandmarks) {
     const videoWidth = state.canvas.width;
     const videoHeight = state.canvas.height;
 
-    // Draw proximity zones around key face regions
-    const zones = [
-        { region: 'mouth', color: 'rgba(239, 68, 68, 0.15)' },
-        { region: 'nose', color: 'rgba(245, 158, 11, 0.15)' },
-        { region: 'leftEye', color: 'rgba(14, 165, 233, 0.15)' },
-        { region: 'rightEye', color: 'rgba(14, 165, 233, 0.15)' }
+    // Define all zones with their colors (matching CSS toggle colors)
+    const allZones = [
+        { region: 'mouth', color: 'rgba(239, 68, 68, 0.2)', enabled: state.settings.zones.mouth },
+        { region: 'nose', color: 'rgba(245, 158, 11, 0.2)', enabled: state.settings.zones.nose },
+        { region: 'leftEye', color: 'rgba(14, 165, 233, 0.2)', enabled: state.settings.zones.leftEye },
+        { region: 'rightEye', color: 'rgba(14, 165, 233, 0.2)', enabled: state.settings.zones.rightEye },
+        { region: 'leftCheek', color: 'rgba(139, 92, 246, 0.2)', enabled: state.settings.zones.leftCheek },
+        { region: 'rightCheek', color: 'rgba(139, 92, 246, 0.2)', enabled: state.settings.zones.rightCheek },
+        { region: 'chin', color: 'rgba(34, 197, 94, 0.2)', enabled: state.settings.zones.chin }
     ];
 
     const threshold = 40 / (state.settings.sensitivity / 100);
 
-    for (const { region, color } of zones) {
+    for (const { region, color, enabled } of allZones) {
+        // Only draw enabled zones
+        if (!enabled) continue;
+
         const indices = FACE_REGIONS[region];
+        if (!indices) continue;
+
         const points = indices.map(idx => ({
             x: faceLandmarks[idx].x * videoWidth,
             y: faceLandmarks[idx].y * videoHeight
@@ -538,7 +603,8 @@ function updateDetectionStatus(faceVisible, touching) {
         textEl.textContent = 'No face detected';
         statusEl.classList.add('warning');
     } else if (touching) {
-        textEl.textContent = 'Face touch detected!';
+        const zoneName = state.lastTouchedZone ? getZoneDisplayName(state.lastTouchedZone) : 'Face';
+        textEl.textContent = `${zoneName} touch detected!`;
         statusEl.classList.add('danger');
     } else {
         textEl.textContent = 'Monitoring...';
@@ -665,6 +731,29 @@ function setupEventListeners() {
     elements.sensitivitySlider.addEventListener('input', (e) => {
         state.settings.sensitivity = parseInt(e.target.value, 10);
         elements.sensitivityValue.textContent = `${state.settings.sensitivity}%`;
+    });
+
+    // Zone toggles
+    elements.zoneMouth.addEventListener('change', (e) => {
+        state.settings.zones.mouth = e.target.checked;
+    });
+
+    elements.zoneNose.addEventListener('change', (e) => {
+        state.settings.zones.nose = e.target.checked;
+    });
+
+    elements.zoneEyes.addEventListener('change', (e) => {
+        state.settings.zones.leftEye = e.target.checked;
+        state.settings.zones.rightEye = e.target.checked;
+    });
+
+    elements.zoneCheeks.addEventListener('change', (e) => {
+        state.settings.zones.leftCheek = e.target.checked;
+        state.settings.zones.rightCheek = e.target.checked;
+    });
+
+    elements.zoneChin.addEventListener('change', (e) => {
+        state.settings.zones.chin = e.target.checked;
     });
 }
 
