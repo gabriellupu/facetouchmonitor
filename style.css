@@ -324,18 +324,20 @@ body {
 /* Dashboard Sidebar */
 .dashboard {
     width: var(--sidebar-width);
+    height: 100vh;
+    max-height: 100vh;
     background: var(--color-bg-light);
     border-left: 1px solid var(--color-border);
     overflow-y: auto;
+    overflow-x: hidden;
     flex-shrink: 0;
 }
 
 .dashboard-content {
-    padding: var(--space-lg);
+    padding: var(--space-md);
     display: flex;
     flex-direction: column;
-    gap: var(--space-lg);
-    min-height: 100%;
+    gap: var(--space-md);
 }
 
 .dashboard-header {
@@ -345,7 +347,7 @@ body {
 }
 
 .dashboard-header h2 {
-    font-size: var(--font-size-xl);
+    font-size: var(--font-size-lg);
     font-weight: 600;
 }
 
@@ -372,31 +374,31 @@ body {
 /* Stats Section */
 .stats-section h3,
 .controls-section h3 {
-    font-size: var(--font-size-sm);
+    font-size: var(--font-size-xs);
     font-weight: 600;
     color: var(--color-text-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    margin-bottom: var(--space-md);
+    margin-bottom: var(--space-sm);
 }
 
 .stats-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: var(--space-sm);
+    gap: var(--space-xs);
 }
 
 .stat-card {
     background: var(--color-bg);
     border-radius: var(--radius-md);
-    padding: var(--space-md);
+    padding: var(--space-sm);
     display: flex;
     flex-direction: column;
-    gap: var(--space-xs);
+    gap: 2px;
 }
 
 .stat-value {
-    font-size: var(--font-size-2xl);
+    font-size: var(--font-size-xl);
     font-weight: 700;
     color: var(--color-primary-light);
 }
@@ -409,13 +411,13 @@ body {
 /* Controls */
 .controls-section {
     border-top: 1px solid var(--color-border);
-    padding-top: var(--space-lg);
+    padding-top: var(--space-md);
 }
 
 .control-group {
     display: flex;
     flex-direction: column;
-    gap: var(--space-sm);
+    gap: var(--space-xs);
 }
 
 /* Toggle Control */
@@ -424,7 +426,7 @@ body {
     align-items: center;
     gap: var(--space-md);
     cursor: pointer;
-    padding: var(--space-sm) 0;
+    padding: var(--space-xs) 0;
 }
 
 .toggle-control input {
@@ -470,7 +472,7 @@ body {
 .section-hint {
     font-size: var(--font-size-xs);
     color: var(--color-text-dim);
-    margin-bottom: var(--space-md);
+    margin-bottom: var(--space-sm);
 }
 
 /* Zone-specific toggle colors */
@@ -501,7 +503,7 @@ body {
 
 /* Input Group */
 .input-group {
-    margin-top: var(--space-md);
+    margin-top: var(--space-sm);
 }
 
 .input-group label {
@@ -540,7 +542,7 @@ body {
 
 /* Slider Control */
 .slider-control {
-    padding: var(--space-sm) 0;
+    padding: var(--space-xs) 0;
 }
 
 .slider-control input[type="range"] {
@@ -616,6 +618,7 @@ body {
 
 .btn-secondary {
     width: 100%;
+    padding: var(--space-sm) var(--space-md);
     background: var(--color-bg);
     color: var(--color-text);
     border: 1px solid var(--color-border);
@@ -627,6 +630,7 @@ body {
 
 .btn-danger {
     width: 100%;
+    padding: var(--space-sm) var(--space-md);
     background: transparent;
     color: var(--color-danger);
     border: 1px solid var(--color-danger);
@@ -641,22 +645,22 @@ body {
 .actions-section {
     display: flex;
     flex-direction: column;
-    gap: var(--space-sm);
+    gap: var(--space-xs);
     margin-top: auto;
-    padding-top: var(--space-lg);
+    padding-top: var(--space-sm);
     border-top: 1px solid var(--color-border);
 }
 
 /* Dashboard Footer */
 .dashboard-footer {
-    padding-top: var(--space-md);
+    padding-top: var(--space-sm);
     border-top: 1px solid var(--color-border);
     font-size: var(--font-size-xs);
     color: var(--color-text-dim);
     text-align: center;
     display: flex;
     flex-direction: column;
-    gap: var(--space-sm);
+    gap: var(--space-xs);
     align-items: center;
 }
 
@@ -674,8 +678,8 @@ body {
 .github-badge {
     display: inline-flex;
     align-items: center;
-    gap: var(--space-sm);
-    padding: var(--space-sm) var(--space-md);
+    gap: var(--space-xs);
+    padding: var(--space-xs) var(--space-sm);
     background: var(--color-bg);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
