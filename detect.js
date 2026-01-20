@@ -707,6 +707,13 @@ function setupEventListeners() {
         state.settings.visualAlertEnabled = e.target.checked;
     });
 
+    elements.alertCooldown.addEventListener('input', (e) => {
+        const value = parseInt(e.target.value, 10);
+        if (value >= 1 && value <= 30) {
+            state.settings.alertCooldownMs = value * 1000;
+        }
+    });
+
     elements.alertCooldown.addEventListener('change', (e) => {
         const value = parseInt(e.target.value, 10);
         if (value >= 1 && value <= 30) {
