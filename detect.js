@@ -37,7 +37,7 @@ const state = {
     // Settings
     settings: {
         sensitivity: 100,
-        alertCooldownMs: 3000,
+        alertCooldownMs: 2000,
         soundEnabled: true,
         notifyEnabled: false,
         visualAlertEnabled: true,
@@ -112,6 +112,7 @@ const elements = {
     notifyToggle: document.getElementById('notifyToggle'),
     visualAlertToggle: document.getElementById('visualAlertToggle'),
     alertCooldown: document.getElementById('alertCooldown'),
+    cooldownValue: document.getElementById('cooldownValue'),
     showLandmarks: document.getElementById('showLandmarks'),
     showHands: document.getElementById('showHands'),
     showProximity: document.getElementById('showProximity'),
@@ -615,30 +616,47 @@ function updateDetectionStatus(faceVisible, touching) {
 // Audio
 // ============================================================================
 
-function playBeep(frequency, duration) {
+function initAudioContext() {
+    if (!state.audioContext) {
+        state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    return state.audioContext;
+}
+
+async function playBeep(frequency, duration) {
     try {
-        if (!state.audioContext) {
-            state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const ctx = initAudioContext();
+
+        // Resume context if suspended (happens in background tabs)
+        if (ctx.state === 'suspended') {
+            await ctx.resume();
         }
 
-        const oscillator = state.audioContext.createOscillator();
-        const gainNode = state.audioContext.createGain();
+        const oscillator = ctx.createOscillator();
+        const gainNode = ctx.createGain();
 
         oscillator.connect(gainNode);
-        gainNode.connect(state.audioContext.destination);
+        gainNode.connect(ctx.destination);
 
         oscillator.frequency.value = frequency;
         oscillator.type = 'sine';
 
-        gainNode.gain.setValueAtTime(0.3, state.audioContext.currentTime);
-        gainNode.gain.exponentialRampToValueAtTime(0.01, state.audioContext.currentTime + duration / 1000);
+        gainNode.gain.setValueAtTime(0.3, ctx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + duration / 1000);
 
         oscillator.start();
-        oscillator.stop(state.audioContext.currentTime + duration / 1000);
+        oscillator.stop(ctx.currentTime + duration / 1000);
     } catch (error) {
         console.warn('Audio playback failed:', error);
     }
 }
+
+// Keep audio context alive when tab visibility changes
+document.addEventListener('visibilitychange', () => {
+    if (state.audioContext && state.audioContext.state === 'suspended' && state.isRunning) {
+        state.audioContext.resume();
+    }
+});
 
 // ============================================================================
 // Notifications
@@ -707,18 +725,11 @@ function setupEventListeners() {
         state.settings.visualAlertEnabled = e.target.checked;
     });
 
+    // Cooldown slider
     elements.alertCooldown.addEventListener('input', (e) => {
-        const value = parseInt(e.target.value, 10);
-        if (value >= 1 && value <= 30) {
-            state.settings.alertCooldownMs = value * 1000;
-        }
-    });
-
-    elements.alertCooldown.addEventListener('change', (e) => {
-        const value = parseInt(e.target.value, 10);
-        if (value >= 1 && value <= 30) {
-            state.settings.alertCooldownMs = value * 1000;
-        }
+        const value = parseFloat(e.target.value);
+        state.settings.alertCooldownMs = value * 1000;
+        elements.cooldownValue.textContent = `${value}s`;
     });
 
     // Visualization controls
