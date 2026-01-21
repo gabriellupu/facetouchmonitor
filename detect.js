@@ -30,6 +30,7 @@ const state = {
     alertCooldown: false,
     isTouching: false,
     wasTouching: false,
+    continuousBeepTimer: null,
 
     // Audio context (lazy init)
     audioContext: null,
@@ -81,6 +82,66 @@ const FACE_REGIONS = {
 // Hand fingertip indices (MediaPipe Hand Landmarks)
 const FINGERTIPS = [4, 8, 12, 16, 20]; // thumb, index, middle, ring, pinky
 const FINGER_NAMES = ['thumb', 'index', 'middle', 'ring', 'pinky'];
+
+// LocalStorage key for settings persistence
+const SETTINGS_STORAGE_KEY = 'faceTouchMonitor_settings';
+
+// ============================================================================
+// Settings Persistence
+// ============================================================================
+
+function saveSettings() {
+    try {
+        localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(state.settings));
+    } catch (error) {
+        console.warn('Failed to save settings to localStorage:', error);
+    }
+}
+
+function loadSettings() {
+    try {
+        const saved = localStorage.getItem(SETTINGS_STORAGE_KEY);
+        if (saved) {
+            const parsed = JSON.parse(saved);
+            // Merge with defaults to ensure all keys exist
+            state.settings = { ...state.settings, ...parsed };
+            // Handle nested zones object
+            if (parsed.zones) {
+                state.settings.zones = { ...state.settings.zones, ...parsed.zones };
+            }
+        }
+    } catch (error) {
+        console.warn('Failed to load settings from localStorage:', error);
+    }
+}
+
+function applySettingsToUI() {
+    // Alert toggles
+    elements.beepToggle.checked = state.settings.soundEnabled;
+    elements.notifyToggle.checked = state.settings.notifyEnabled;
+    elements.visualAlertToggle.checked = state.settings.visualAlertEnabled;
+
+    // Cooldown slider
+    const cooldownSec = state.settings.alertCooldownMs / 1000;
+    elements.alertCooldown.value = cooldownSec;
+    elements.cooldownValue.textContent = `${cooldownSec}s`;
+
+    // Visualization toggles
+    elements.showLandmarks.checked = state.settings.showFaceMesh;
+    elements.showHands.checked = state.settings.showHands;
+    elements.showProximity.checked = state.settings.showProximity;
+
+    // Sensitivity slider
+    elements.sensitivitySlider.value = state.settings.sensitivity;
+    elements.sensitivityValue.textContent = `${state.settings.sensitivity}%`;
+
+    // Zone toggles
+    elements.zoneMouth.checked = state.settings.zones.mouth;
+    elements.zoneNose.checked = state.settings.zones.nose;
+    elements.zoneEyes.checked = state.settings.zones.leftEye && state.settings.zones.rightEye;
+    elements.zoneCheeks.checked = state.settings.zones.leftCheek && state.settings.zones.rightCheek;
+    elements.zoneChin.checked = state.settings.zones.chin;
+}
 
 // ============================================================================
 // DOM Elements
@@ -393,9 +454,58 @@ function handleTouchState(touchDetected, faceVisible) {
     // Update status display
     updateDetectionStatus(faceVisible, touchDetected);
 
-    // Trigger alert on new touch
-    if (touchDetected && !state.wasTouching && !state.alertCooldown) {
+    // Handle touch state transitions
+    if (touchDetected && !state.wasTouching) {
+        // New touch started - trigger immediately and start continuous beep timer
         triggerAlert();
+        startContinuousBeep();
+    } else if (!touchDetected && state.wasTouching) {
+        // Touch ended - stop continuous beep
+        stopContinuousBeep();
+    }
+}
+
+function startContinuousBeep() {
+    // Clear any existing timer
+    stopContinuousBeep();
+
+    // Set up interval to beep continuously while touching
+    state.continuousBeepTimer = setInterval(() => {
+        if (state.isTouching) {
+            triggerContinuousAlert();
+        } else {
+            stopContinuousBeep();
+        }
+    }, state.settings.alertCooldownMs);
+}
+
+function stopContinuousBeep() {
+    if (state.continuousBeepTimer) {
+        clearInterval(state.continuousBeepTimer);
+        state.continuousBeepTimer = null;
+    }
+}
+
+function triggerContinuousAlert() {
+    // Only play sound and visual during continuous touch (no count increment)
+    const zoneName = state.lastTouchedZone ? getZoneDisplayName(state.lastTouchedZone) : 'Face';
+
+    // Sound alert
+    if (state.settings.soundEnabled) {
+        playBeep(440, 150);
+    }
+
+    // Visual alert
+    if (state.settings.visualAlertEnabled) {
+        elements.alertFlash.classList.add('active');
+        setTimeout(() => {
+            elements.alertFlash.classList.remove('active');
+        }, 400);
+    }
+
+    // Browser notification (optional for continuous - can be noisy)
+    if (state.settings.notifyEnabled) {
+        sendNotification(`Still touching ${zoneName}!`);
     }
 }
 
@@ -423,12 +533,6 @@ function triggerAlert() {
     if (state.settings.notifyEnabled) {
         sendNotification(`${zoneName} touch detected! Count: ${state.touchCount}`);
     }
-
-    // Set cooldown
-    state.alertCooldown = true;
-    setTimeout(() => {
-        state.alertCooldown = false;
-    }, state.settings.alertCooldownMs);
 }
 
 // ============================================================================
@@ -707,6 +811,7 @@ function setupEventListeners() {
     // Toggle controls
     elements.beepToggle.addEventListener('change', (e) => {
         state.settings.soundEnabled = e.target.checked;
+        saveSettings();
     });
 
     elements.notifyToggle.addEventListener('change', async (e) => {
@@ -719,10 +824,12 @@ function setupEventListeners() {
             }
         }
         state.settings.notifyEnabled = e.target.checked;
+        saveSettings();
     });
 
     elements.visualAlertToggle.addEventListener('change', (e) => {
         state.settings.visualAlertEnabled = e.target.checked;
+        saveSettings();
     });
 
     // Cooldown slider
@@ -730,48 +837,58 @@ function setupEventListeners() {
         const value = parseFloat(e.target.value);
         state.settings.alertCooldownMs = value * 1000;
         elements.cooldownValue.textContent = `${value}s`;
+        saveSettings();
     });
 
     // Visualization controls
     elements.showLandmarks.addEventListener('change', (e) => {
         state.settings.showFaceMesh = e.target.checked;
+        saveSettings();
     });
 
     elements.showHands.addEventListener('change', (e) => {
         state.settings.showHands = e.target.checked;
+        saveSettings();
     });
 
     elements.showProximity.addEventListener('change', (e) => {
         state.settings.showProximity = e.target.checked;
+        saveSettings();
     });
 
     // Sensitivity slider
     elements.sensitivitySlider.addEventListener('input', (e) => {
         state.settings.sensitivity = parseInt(e.target.value, 10);
         elements.sensitivityValue.textContent = `${state.settings.sensitivity}%`;
+        saveSettings();
     });
 
     // Zone toggles
     elements.zoneMouth.addEventListener('change', (e) => {
         state.settings.zones.mouth = e.target.checked;
+        saveSettings();
     });
 
     elements.zoneNose.addEventListener('change', (e) => {
         state.settings.zones.nose = e.target.checked;
+        saveSettings();
     });
 
     elements.zoneEyes.addEventListener('change', (e) => {
         state.settings.zones.leftEye = e.target.checked;
         state.settings.zones.rightEye = e.target.checked;
+        saveSettings();
     });
 
     elements.zoneCheeks.addEventListener('change', (e) => {
         state.settings.zones.leftCheek = e.target.checked;
         state.settings.zones.rightCheek = e.target.checked;
+        saveSettings();
     });
 
     elements.zoneChin.addEventListener('change', (e) => {
         state.settings.zones.chin = e.target.checked;
+        saveSettings();
     });
 }
 
@@ -824,6 +941,9 @@ function stopMonitoring() {
         state.animationId = null;
     }
 
+    // Stop continuous beep timer
+    stopContinuousBeep();
+
     // Stop camera
     if (elements.video.srcObject) {
         elements.video.srcObject.getTracks().forEach(track => track.stop());
@@ -855,5 +975,9 @@ function resetStatistics() {
 // ============================================================================
 // Initialize
 // ============================================================================
+
+// Load saved settings and apply to UI
+loadSettings();
+applySettingsToUI();
 
 setupEventListeners();
