@@ -87,6 +87,19 @@
                 <div class="alert-flash" id="alertFlash"></div>
             </div>
 
+            <!-- Lateral Camera Preview (for posture detection) -->
+            <div class="lateral-video-wrapper" id="lateralVideoWrapper">
+                <div class="lateral-video-header">
+                    <span class="lateral-label">Lateral Camera (Posture)</span>
+                    <div class="posture-status" id="postureStatus">
+                        <span class="posture-status-dot"></span>
+                        <span class="posture-status-text">--</span>
+                    </div>
+                </div>
+                <video id="lateralVideoElement" autoplay playsinline muted></video>
+                <canvas id="lateralOverlayCanvas"></canvas>
+            </div>
+
             <!-- Welcome Content (shown before start) -->
             <section class="welcome-content" id="welcomeContent">
                 <h1>Nail Biting Detector</h1>
@@ -263,6 +276,98 @@
                             <span class="toggle-slider"></span>
                             <span class="toggle-label">Show proximity zones</span>
                         </label>
+                    </div>
+                </section>
+
+                <!-- Posture Detection Section -->
+                <section class="controls-section posture-section">
+                    <h3>Posture Detection</h3>
+                    <p class="section-hint">Use a lateral (side) camera to monitor posture</p>
+
+                    <div class="control-group">
+                        <label class="toggle-control">
+                            <input type="checkbox" id="postureToggle">
+                            <span class="toggle-slider zone-posture"></span>
+                            <span class="toggle-label">Enable posture alerts</span>
+                        </label>
+
+                        <div class="select-control">
+                            <label for="lateralCameraSelect">Lateral camera</label>
+                            <select id="lateralCameraSelect">
+                                <option value="">Select lateral camera...</option>
+                            </select>
+                        </div>
+
+                        <label class="toggle-control">
+                            <input type="checkbox" id="showPoseLandmarks" checked>
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-label">Show pose landmarks</span>
+                        </label>
+                    </div>
+
+                    <div class="posture-stats">
+                        <div class="stat-mini">
+                            <span class="stat-mini-value" id="postureAlertCount">0</span>
+                            <span class="stat-mini-label">Posture Alerts</span>
+                        </div>
+                        <div class="stat-mini">
+                            <span class="stat-mini-value" id="lastPostureAlert">--</span>
+                            <span class="stat-mini-label">Last Alert</span>
+                        </div>
+                    </div>
+
+                    <div class="posture-fine-tuning">
+                        <h4>Fine Tuning</h4>
+
+                        <div class="slider-control">
+                            <label for="postureSensitivitySlider">Overall sensitivity</label>
+                            <input type="range" id="postureSensitivitySlider" min="50" max="200" value="100">
+                            <div class="slider-labels">
+                                <span>Less</span>
+                                <span id="postureSensitivityValue">100%</span>
+                                <span>More</span>
+                            </div>
+                        </div>
+
+                        <div class="slider-control">
+                            <label for="headForwardSlider">Head forward threshold</label>
+                            <input type="range" id="headForwardSlider" min="5" max="30" value="15">
+                            <div class="slider-labels">
+                                <span>5°</span>
+                                <span id="headForwardValue">15°</span>
+                                <span>30°</span>
+                            </div>
+                        </div>
+
+                        <div class="slider-control">
+                            <label for="shoulderSlouchSlider">Shoulder slouch threshold</label>
+                            <input type="range" id="shoulderSlouchSlider" min="5" max="25" value="10">
+                            <div class="slider-labels">
+                                <span>5°</span>
+                                <span id="shoulderSlouchValue">10°</span>
+                                <span>25°</span>
+                            </div>
+                        </div>
+
+                        <div class="slider-control">
+                            <label for="spineAngleSlider">Spine curve threshold</label>
+                            <input type="range" id="spineAngleSlider" min="5" max="30" value="15">
+                            <div class="slider-labels">
+                                <span>5°</span>
+                                <span id="spineAngleValue">15°</span>
+                                <span>30°</span>
+                            </div>
+                        </div>
+
+                        <div class="slider-control">
+                            <label for="postureCooldownSlider">Alert cooldown</label>
+                            <input type="range" id="postureCooldownSlider" min="1" max="10" step="0.5" value="3">
+                            <div class="slider-labels">
+                                <span>1s</span>
+                                <span id="postureCooldownValue">3s</span>
+                                <span>10s</span>
+                            </div>
+                        </div>
                     </div>
                 </section>
 

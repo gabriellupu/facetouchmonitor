@@ -501,6 +501,10 @@ body {
     background: #22c55e;
 }
 
+.toggle-control input:checked + .toggle-slider.zone-posture {
+    background: #ec4899;
+}
+
 /* Input Group */
 .input-group {
     margin-top: var(--space-sm);
@@ -717,6 +721,199 @@ body {
     color: var(--color-primary-light);
 }
 
+/* Lateral Camera Preview (Posture Detection) */
+.lateral-video-wrapper {
+    position: absolute;
+    bottom: var(--space-md);
+    right: var(--space-md);
+    width: 280px;
+    background: rgba(15, 23, 42, 0.9);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+    z-index: 15;
+    display: none;
+    flex-direction: column;
+}
+
+.lateral-video-wrapper.visible {
+    display: flex;
+}
+
+.lateral-video-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-xs) var(--space-sm);
+    background: var(--color-bg-light);
+    border-bottom: 1px solid var(--color-border);
+}
+
+.lateral-label {
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    color: var(--color-text-muted);
+}
+
+.lateral-video-wrapper video {
+    width: 100%;
+    height: auto;
+    display: block;
+}
+
+.lateral-video-wrapper canvas {
+    position: absolute;
+    top: 32px; /* Account for header */
+    left: 0;
+    width: 100%;
+    height: calc(100% - 32px);
+    pointer-events: none;
+}
+
+/* Posture Status Indicator */
+.posture-status {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    font-size: var(--font-size-xs);
+}
+
+.posture-status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-text-dim);
+}
+
+.posture-status.good .posture-status-dot {
+    background: var(--color-success);
+}
+
+.posture-status.bad .posture-status-dot {
+    background: var(--color-danger);
+    animation: pulse-dot-danger 0.5s ease-in-out infinite;
+}
+
+.posture-status-text {
+    color: var(--color-text-muted);
+}
+
+.posture-status.good .posture-status-text {
+    color: var(--color-success);
+}
+
+.posture-status.bad .posture-status-text {
+    color: var(--color-danger);
+}
+
+/* Posture Section Styles */
+.posture-section {
+    background: rgba(236, 72, 153, 0.05);
+    margin: 0 calc(-1 * var(--space-md));
+    padding: var(--space-md) !important;
+    border-top: 1px solid rgba(236, 72, 153, 0.2) !important;
+}
+
+.posture-stats {
+    display: flex;
+    gap: var(--space-sm);
+    margin-top: var(--space-sm);
+    margin-bottom: var(--space-sm);
+}
+
+.stat-mini {
+    flex: 1;
+    background: var(--color-bg);
+    border-radius: var(--radius-sm);
+    padding: var(--space-xs) var(--space-sm);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+}
+
+.stat-mini-value {
+    font-size: var(--font-size-base);
+    font-weight: 600;
+    color: #ec4899;
+}
+
+.stat-mini-label {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-dim);
+}
+
+/* Posture Fine Tuning */
+.posture-fine-tuning {
+    margin-top: var(--space-md);
+    padding-top: var(--space-sm);
+    border-top: 1px solid var(--color-border);
+}
+
+.posture-fine-tuning h4 {
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: var(--space-sm);
+}
+
+.posture-fine-tuning .slider-control {
+    margin-bottom: var(--space-sm);
+}
+
+.posture-fine-tuning .slider-control label {
+    display: block;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-xs);
+}
+
+/* Select Control */
+.select-control {
+    margin: var(--space-sm) 0;
+}
+
+.select-control label {
+    display: block;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-xs);
+}
+
+.select-control select {
+    width: 100%;
+    padding: var(--space-sm) var(--space-md);
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    color: var(--color-text);
+    font-size: var(--font-size-sm);
+    font-family: inherit;
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2394a3b8' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right var(--space-sm) center;
+    padding-right: var(--space-xl);
+}
+
+.select-control select:focus {
+    outline: none;
+    border-color: var(--color-primary);
+}
+
+.select-control select option {
+    background: var(--color-bg-light);
+    color: var(--color-text);
+}
+
+/* Alert Flash for Posture (different color) */
+.alert-flash.posture {
+    background: radial-gradient(circle at center, transparent 0%, rgba(236, 72, 153, 0.3) 100%);
+}
+
 /* Responsive Design */
 @media (max-width: 1200px) {
     :root {
@@ -783,6 +980,20 @@ body {
         flex-direction: row;
         gap: var(--space-sm);
     }
+
+    /* Lateral camera on mobile */
+    .lateral-video-wrapper {
+        position: fixed;
+        bottom: var(--space-sm);
+        right: var(--space-sm);
+        width: 200px;
+        z-index: 100;
+    }
+
+    .lateral-video-wrapper canvas {
+        top: 28px;
+        height: calc(100% - 28px);
+    }
 }
 
 @media (max-width: 480px) {
@@ -796,6 +1007,15 @@ body {
 
     .btn-primary {
         width: 100%;
+    }
+
+    /* Lateral camera smaller on very small screens */
+    .lateral-video-wrapper {
+        width: 160px;
+    }
+
+    .posture-stats {
+        flex-direction: column;
     }
 }
 

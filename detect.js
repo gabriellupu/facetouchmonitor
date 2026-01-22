@@ -3,7 +3,7 @@
  * Uses MediaPipe Face Mesh and Hand Landmarker for accurate proximity detection
  */
 
-import { FaceLandmarker, HandLandmarker, FilesetResolver, DrawingUtils } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/vision_bundle.mjs';
+import { FaceLandmarker, HandLandmarker, PoseLandmarker, FilesetResolver, DrawingUtils } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/vision_bundle.mjs';
 
 // ============================================================================
 // State Management
@@ -13,15 +13,25 @@ const state = {
     isRunning: false,
     faceLandmarker: null,
     handLandmarker: null,
+    poseLandmarker: null,
     video: null,
     canvas: null,
     ctx: null,
     drawingUtils: null,
     animationId: null,
 
+    // Lateral camera for posture detection
+    lateralVideo: null,
+    lateralCanvas: null,
+    lateralCtx: null,
+    lateralStream: null,
+    availableCameras: [],
+
     // Statistics
     touchCount: 0,
     lastTouchTime: null,
+    postureAlertCount: 0,
+    lastPostureAlertTime: null,
     startTime: null,
     lastFrameTime: 0,
     fps: 0,
@@ -31,6 +41,12 @@ const state = {
     isTouching: false,
     wasTouching: false,
     continuousBeepTimer: null,
+
+    // Posture alert state
+    isBadPosture: false,
+    wasBadPosture: false,
+    postureBeepTimer: null,
+    currentPostureIssue: null,
 
     // Audio context (lazy init)
     audioContext: null,
@@ -54,6 +70,18 @@ const state = {
             leftCheek: false,
             rightCheek: false,
             chin: false
+        },
+        // Posture detection settings
+        posture: {
+            enabled: false,
+            lateralCameraId: null,
+            showPoseLandmarks: true,
+            sensitivity: 100,
+            // Fine-tuning thresholds (percentages that can be adjusted)
+            headForwardThreshold: 15,      // degrees - head tilt forward
+            shoulderSlouchThreshold: 10,    // degrees - shoulder drop
+            spineAngleThreshold: 15,        // degrees - spine curvature
+            alertCooldownMs: 3000           // separate cooldown for posture alerts
         }
     },
 
@@ -109,6 +137,10 @@ function loadSettings() {
             if (parsed.zones) {
                 state.settings.zones = { ...state.settings.zones, ...parsed.zones };
             }
+            // Handle nested posture object
+            if (parsed.posture) {
+                state.settings.posture = { ...state.settings.posture, ...parsed.posture };
+            }
         }
     } catch (error) {
         console.warn('Failed to load settings from localStorage:', error);
@@ -141,6 +173,38 @@ function applySettingsToUI() {
     elements.zoneEyes.checked = state.settings.zones.leftEye && state.settings.zones.rightEye;
     elements.zoneCheeks.checked = state.settings.zones.leftCheek && state.settings.zones.rightCheek;
     elements.zoneChin.checked = state.settings.zones.chin;
+
+    // Posture settings
+    if (elements.postureToggle) {
+        elements.postureToggle.checked = state.settings.posture.enabled;
+    }
+    if (elements.showPoseLandmarks) {
+        elements.showPoseLandmarks.checked = state.settings.posture.showPoseLandmarks;
+    }
+    if (elements.postureSensitivitySlider) {
+        elements.postureSensitivitySlider.value = state.settings.posture.sensitivity;
+        elements.postureSensitivityValue.textContent = `${state.settings.posture.sensitivity}%`;
+    }
+    if (elements.headForwardSlider) {
+        elements.headForwardSlider.value = state.settings.posture.headForwardThreshold;
+        elements.headForwardValue.textContent = `${state.settings.posture.headForwardThreshold}°`;
+    }
+    if (elements.shoulderSlouchSlider) {
+        elements.shoulderSlouchSlider.value = state.settings.posture.shoulderSlouchThreshold;
+        elements.shoulderSlouchValue.textContent = `${state.settings.posture.shoulderSlouchThreshold}°`;
+    }
+    if (elements.spineAngleSlider) {
+        elements.spineAngleSlider.value = state.settings.posture.spineAngleThreshold;
+        elements.spineAngleValue.textContent = `${state.settings.posture.spineAngleThreshold}°`;
+    }
+    if (elements.postureCooldownSlider) {
+        const postureCooldownSec = state.settings.posture.alertCooldownMs / 1000;
+        elements.postureCooldownSlider.value = postureCooldownSec;
+        elements.postureCooldownValue.textContent = `${postureCooldownSec}s`;
+    }
+
+    // Update lateral video wrapper visibility
+    updateLateralCameraVisibility();
 }
 
 // ============================================================================
@@ -185,7 +249,28 @@ const elements = {
     zoneNose: document.getElementById('zoneNose'),
     zoneEyes: document.getElementById('zoneEyes'),
     zoneCheeks: document.getElementById('zoneCheeks'),
-    zoneChin: document.getElementById('zoneChin')
+    zoneChin: document.getElementById('zoneChin'),
+
+    // Posture detection elements
+    postureToggle: document.getElementById('postureToggle'),
+    lateralCameraSelect: document.getElementById('lateralCameraSelect'),
+    lateralVideo: document.getElementById('lateralVideoElement'),
+    lateralCanvas: document.getElementById('lateralOverlayCanvas'),
+    lateralVideoWrapper: document.getElementById('lateralVideoWrapper'),
+    showPoseLandmarks: document.getElementById('showPoseLandmarks'),
+    postureSensitivitySlider: document.getElementById('postureSensitivitySlider'),
+    postureSensitivityValue: document.getElementById('postureSensitivityValue'),
+    headForwardSlider: document.getElementById('headForwardSlider'),
+    headForwardValue: document.getElementById('headForwardValue'),
+    shoulderSlouchSlider: document.getElementById('shoulderSlouchSlider'),
+    shoulderSlouchValue: document.getElementById('shoulderSlouchValue'),
+    spineAngleSlider: document.getElementById('spineAngleSlider'),
+    spineAngleValue: document.getElementById('spineAngleValue'),
+    postureCooldownSlider: document.getElementById('postureCooldownSlider'),
+    postureCooldownValue: document.getElementById('postureCooldownValue'),
+    postureAlertCount: document.getElementById('postureAlertCount'),
+    lastPostureAlert: document.getElementById('lastPostureAlert'),
+    postureStatus: document.getElementById('postureStatus')
 };
 
 // ============================================================================
@@ -223,6 +308,19 @@ async function initializeMediaPipe() {
             numHands: 2,
             minHandDetectionConfidence: 0.5,
             minHandPresenceConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        // Initialize Pose Landmarker for posture detection
+        state.poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+            baseOptions: {
+                modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+                delegate: 'GPU'
+            },
+            runningMode: 'VIDEO',
+            numPoses: 1,
+            minPoseDetectionConfidence: 0.5,
+            minPosePresenceConfidence: 0.5,
             minTrackingConfidence: 0.5
         });
 
@@ -266,6 +364,107 @@ async function initializeCamera() {
         console.error('Failed to access camera:', error);
         alert('Unable to access camera. Please ensure you have granted camera permissions.');
         return false;
+    }
+}
+
+// ============================================================================
+// Lateral Camera Management (for Posture Detection)
+// ============================================================================
+
+async function enumerateCameras() {
+    try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        state.availableCameras = devices.filter(device => device.kind === 'videoinput');
+        populateCameraSelect();
+        return state.availableCameras;
+    } catch (error) {
+        console.error('Failed to enumerate cameras:', error);
+        return [];
+    }
+}
+
+function populateCameraSelect() {
+    if (!elements.lateralCameraSelect) return;
+
+    // Clear existing options
+    elements.lateralCameraSelect.innerHTML = '<option value="">Select lateral camera...</option>';
+
+    // Add camera options
+    state.availableCameras.forEach((camera, index) => {
+        const option = document.createElement('option');
+        option.value = camera.deviceId;
+        option.textContent = camera.label || `Camera ${index + 1}`;
+        elements.lateralCameraSelect.appendChild(option);
+    });
+
+    // Select previously chosen camera if available
+    if (state.settings.posture.lateralCameraId) {
+        elements.lateralCameraSelect.value = state.settings.posture.lateralCameraId;
+    }
+}
+
+async function initializeLateralCamera(deviceId) {
+    try {
+        // Stop existing lateral stream if any
+        stopLateralCamera();
+
+        if (!deviceId) return false;
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                deviceId: { exact: deviceId },
+                width: { ideal: 640 },
+                height: { ideal: 480 }
+            },
+            audio: false
+        });
+
+        state.lateralStream = stream;
+        elements.lateralVideo.srcObject = stream;
+
+        return new Promise((resolve) => {
+            elements.lateralVideo.onloadedmetadata = () => {
+                elements.lateralVideo.play();
+
+                // Set canvas dimensions to match video
+                elements.lateralCanvas.width = elements.lateralVideo.videoWidth;
+                elements.lateralCanvas.height = elements.lateralVideo.videoHeight;
+
+                state.lateralVideo = elements.lateralVideo;
+                state.lateralCanvas = elements.lateralCanvas;
+                state.lateralCtx = elements.lateralCanvas.getContext('2d');
+
+                console.log('Lateral camera initialized successfully');
+                resolve(true);
+            };
+        });
+    } catch (error) {
+        console.error('Failed to initialize lateral camera:', error);
+        alert('Unable to access the selected lateral camera. Please try another camera.');
+        return false;
+    }
+}
+
+function stopLateralCamera() {
+    if (state.lateralStream) {
+        state.lateralStream.getTracks().forEach(track => track.stop());
+        state.lateralStream = null;
+    }
+    if (elements.lateralVideo) {
+        elements.lateralVideo.srcObject = null;
+    }
+    state.lateralVideo = null;
+    state.lateralCanvas = null;
+    state.lateralCtx = null;
+}
+
+function updateLateralCameraVisibility() {
+    if (elements.lateralVideoWrapper) {
+        if (state.settings.posture.enabled && state.lateralStream) {
+            elements.lateralVideoWrapper.classList.add('visible');
+        } else {
+            elements.lateralVideoWrapper.classList.remove('visible');
+        }
     }
 }
 
@@ -321,6 +520,13 @@ function detectFrame() {
     handleTouchState(touchDetected, faceLandmarks !== null);
 
     state.ctx.restore();
+
+    // Process posture detection from lateral camera
+    if (state.settings.posture.enabled && state.lateralVideo && state.poseLandmarker) {
+        const poseLandmarks = detectPostureFrame();
+        const badPostureDetected = checkPosture(poseLandmarks);
+        handlePostureState(badPostureDetected);
+    }
 
     // Update UI
     updateUI();
@@ -444,6 +650,229 @@ function getMinDistance(point, targets) {
 }
 
 // ============================================================================
+// Posture Detection (using lateral camera)
+// ============================================================================
+
+// MediaPipe Pose Landmark indices for key body points
+const POSE_LANDMARKS = {
+    NOSE: 0,
+    LEFT_EYE_INNER: 1,
+    LEFT_EYE: 2,
+    LEFT_EYE_OUTER: 3,
+    RIGHT_EYE_INNER: 4,
+    RIGHT_EYE: 5,
+    RIGHT_EYE_OUTER: 6,
+    LEFT_EAR: 7,
+    RIGHT_EAR: 8,
+    MOUTH_LEFT: 9,
+    MOUTH_RIGHT: 10,
+    LEFT_SHOULDER: 11,
+    RIGHT_SHOULDER: 12,
+    LEFT_ELBOW: 13,
+    RIGHT_ELBOW: 14,
+    LEFT_WRIST: 15,
+    RIGHT_WRIST: 16,
+    LEFT_PINKY: 17,
+    RIGHT_PINKY: 18,
+    LEFT_INDEX: 19,
+    RIGHT_INDEX: 20,
+    LEFT_THUMB: 21,
+    RIGHT_THUMB: 22,
+    LEFT_HIP: 23,
+    RIGHT_HIP: 24,
+    LEFT_KNEE: 25,
+    RIGHT_KNEE: 26,
+    LEFT_ANKLE: 27,
+    RIGHT_ANKLE: 28,
+    LEFT_HEEL: 29,
+    RIGHT_HEEL: 30,
+    LEFT_FOOT_INDEX: 31,
+    RIGHT_FOOT_INDEX: 32
+};
+
+function checkPosture(poseLandmarks) {
+    if (!poseLandmarks || !state.settings.posture.enabled) {
+        state.currentPostureIssue = null;
+        return false;
+    }
+
+    const issues = [];
+    const sensitivity = state.settings.posture.sensitivity / 100;
+
+    // Get key landmarks
+    const nose = poseLandmarks[POSE_LANDMARKS.NOSE];
+    const leftEar = poseLandmarks[POSE_LANDMARKS.LEFT_EAR];
+    const rightEar = poseLandmarks[POSE_LANDMARKS.RIGHT_EAR];
+    const leftShoulder = poseLandmarks[POSE_LANDMARKS.LEFT_SHOULDER];
+    const rightShoulder = poseLandmarks[POSE_LANDMARKS.RIGHT_SHOULDER];
+    const leftHip = poseLandmarks[POSE_LANDMARKS.LEFT_HIP];
+    const rightHip = poseLandmarks[POSE_LANDMARKS.RIGHT_HIP];
+
+    // 1. Check head forward position (ear should be roughly above shoulder from side view)
+    // In lateral view, if ear.x is significantly ahead of shoulder.x, head is forward
+    const headForwardThreshold = state.settings.posture.headForwardThreshold / sensitivity;
+
+    // Use the ear closest to camera (depending on which side the lateral camera is)
+    const ear = leftEar.visibility > rightEar.visibility ? leftEar : rightEar;
+    const shoulder = leftShoulder.visibility > rightShoulder.visibility ? leftShoulder : rightShoulder;
+
+    if (ear && shoulder && ear.visibility > 0.5 && shoulder.visibility > 0.5) {
+        // Calculate head forward angle
+        const headForwardAngle = calculateAngle(
+            { x: shoulder.x, y: shoulder.y - 0.1 }, // point above shoulder
+            shoulder,
+            ear
+        );
+
+        // If ear is significantly forward of shoulder (angle deviates from vertical)
+        const headForwardDeviation = Math.abs(90 - headForwardAngle);
+        if (headForwardDeviation > headForwardThreshold) {
+            issues.push('Head forward');
+        }
+    }
+
+    // 2. Check shoulder slouch (shoulders should be level)
+    const shoulderSlouchThreshold = state.settings.posture.shoulderSlouchThreshold / sensitivity;
+
+    if (leftShoulder && rightShoulder &&
+        leftShoulder.visibility > 0.5 && rightShoulder.visibility > 0.5) {
+        const shoulderAngle = Math.abs(
+            Math.atan2(rightShoulder.y - leftShoulder.y, rightShoulder.x - leftShoulder.x) * (180 / Math.PI)
+        );
+        if (shoulderAngle > shoulderSlouchThreshold) {
+            issues.push('Uneven shoulders');
+        }
+    }
+
+    // 3. Check spine alignment (from side view - ear, shoulder, hip should be relatively aligned)
+    const spineAngleThreshold = state.settings.posture.spineAngleThreshold / sensitivity;
+
+    const hip = leftHip.visibility > rightHip.visibility ? leftHip : rightHip;
+
+    if (ear && shoulder && hip &&
+        ear.visibility > 0.5 && shoulder.visibility > 0.5 && hip.visibility > 0.5) {
+        // Calculate the angle formed by ear-shoulder-hip
+        const spineAngle = calculateAngle(ear, shoulder, hip);
+        const spineDeviation = Math.abs(180 - spineAngle);
+
+        if (spineDeviation > spineAngleThreshold) {
+            issues.push('Spine curved');
+        }
+    }
+
+    // 4. Check if shoulders are hunched forward (shoulder significantly ahead of hip in x)
+    if (shoulder && hip && shoulder.visibility > 0.5 && hip.visibility > 0.5) {
+        const hunchThreshold = 0.05 / sensitivity; // normalized coordinates
+        if (shoulder.x - hip.x > hunchThreshold) {
+            issues.push('Shoulders hunched');
+        }
+    }
+
+    if (issues.length > 0) {
+        state.currentPostureIssue = issues.join(', ');
+        return true;
+    }
+
+    state.currentPostureIssue = null;
+    return false;
+}
+
+function calculateAngle(pointA, pointB, pointC) {
+    // Calculate angle at pointB formed by pointA-pointB-pointC
+    const radians = Math.atan2(pointC.y - pointB.y, pointC.x - pointB.x) -
+                    Math.atan2(pointA.y - pointB.y, pointA.x - pointB.x);
+    let angle = Math.abs(radians * (180 / Math.PI));
+    if (angle > 180) {
+        angle = 360 - angle;
+    }
+    return angle;
+}
+
+function detectPostureFrame() {
+    if (!state.isRunning || !state.settings.posture.enabled || !state.lateralVideo) {
+        return null;
+    }
+
+    const now = performance.now();
+
+    try {
+        // Get pose landmarks from lateral camera
+        const poseResults = state.poseLandmarker.detectForVideo(state.lateralVideo, now);
+        const poseLandmarks = poseResults.landmarks?.[0] || null;
+
+        // Clear lateral canvas
+        if (state.lateralCtx) {
+            state.lateralCtx.clearRect(0, 0, state.lateralCanvas.width, state.lateralCanvas.height);
+
+            // Draw pose landmarks if enabled
+            if (poseLandmarks && state.settings.posture.showPoseLandmarks) {
+                drawPoseLandmarks(poseLandmarks);
+            }
+        }
+
+        return poseLandmarks;
+    } catch (error) {
+        console.warn('Posture detection error:', error);
+        return null;
+    }
+}
+
+function drawPoseLandmarks(landmarks) {
+    if (!state.lateralCtx || !landmarks) return;
+
+    const ctx = state.lateralCtx;
+    const width = state.lateralCanvas.width;
+    const height = state.lateralCanvas.height;
+
+    // Draw connections
+    const connections = PoseLandmarker.POSE_CONNECTIONS;
+    ctx.strokeStyle = state.isBadPosture ? 'rgba(239, 68, 68, 0.8)' : 'rgba(34, 197, 94, 0.8)';
+    ctx.lineWidth = 2;
+
+    for (const connection of connections) {
+        const start = landmarks[connection.start];
+        const end = landmarks[connection.end];
+
+        if (start.visibility > 0.5 && end.visibility > 0.5) {
+            ctx.beginPath();
+            ctx.moveTo(start.x * width, start.y * height);
+            ctx.lineTo(end.x * width, end.y * height);
+            ctx.stroke();
+        }
+    }
+
+    // Draw landmarks
+    for (let i = 0; i < landmarks.length; i++) {
+        const lm = landmarks[i];
+        if (lm.visibility > 0.5) {
+            const x = lm.x * width;
+            const y = lm.y * height;
+
+            // Highlight key posture points
+            const isKeyPoint = [
+                POSE_LANDMARKS.NOSE,
+                POSE_LANDMARKS.LEFT_EAR,
+                POSE_LANDMARKS.RIGHT_EAR,
+                POSE_LANDMARKS.LEFT_SHOULDER,
+                POSE_LANDMARKS.RIGHT_SHOULDER,
+                POSE_LANDMARKS.LEFT_HIP,
+                POSE_LANDMARKS.RIGHT_HIP
+            ].includes(i);
+
+            const radius = isKeyPoint ? 6 : 3;
+            const color = isKeyPoint
+                ? (state.isBadPosture ? 'rgba(239, 68, 68, 1)' : 'rgba(245, 158, 11, 1)')
+                : 'rgba(34, 197, 94, 0.6)';
+
+            ctx.beginPath();
+            ctx.arc(x, y, radius, 0, 2 * Math.PI);
+            ctx.fillStyle = color;
+            ctx.fill();
+        }
+    }
+}
+
+// ============================================================================
 // Touch State Handling
 // ============================================================================
 
@@ -483,6 +912,109 @@ function stopContinuousBeep() {
     if (state.continuousBeepTimer) {
         clearInterval(state.continuousBeepTimer);
         state.continuousBeepTimer = null;
+    }
+}
+
+// ============================================================================
+// Posture Alert Handling
+// ============================================================================
+
+function handlePostureState(badPostureDetected) {
+    state.wasBadPosture = state.isBadPosture;
+    state.isBadPosture = badPostureDetected;
+
+    // Update posture status display
+    updatePostureStatus(badPostureDetected);
+
+    // Handle posture state transitions
+    if (badPostureDetected && !state.wasBadPosture) {
+        // New bad posture detected - trigger immediately and start continuous alert
+        triggerPostureAlert();
+        startPostureContinuousAlert();
+    } else if (!badPostureDetected && state.wasBadPosture) {
+        // Posture corrected - stop continuous alert
+        stopPostureContinuousAlert();
+    }
+}
+
+function startPostureContinuousAlert() {
+    stopPostureContinuousAlert();
+
+    state.postureBeepTimer = setInterval(() => {
+        if (state.isBadPosture) {
+            triggerPostureContinuousAlert();
+        } else {
+            stopPostureContinuousAlert();
+        }
+    }, state.settings.posture.alertCooldownMs);
+}
+
+function stopPostureContinuousAlert() {
+    if (state.postureBeepTimer) {
+        clearInterval(state.postureBeepTimer);
+        state.postureBeepTimer = null;
+    }
+}
+
+function triggerPostureAlert() {
+    state.postureAlertCount++;
+    state.lastPostureAlertTime = Date.now();
+
+    const issue = state.currentPostureIssue || 'Poor posture';
+    console.log(`Posture alert: ${issue}! Count: ${state.postureAlertCount}`);
+
+    // Sound alert (different tone for posture - lower frequency)
+    if (state.settings.soundEnabled) {
+        playBeep(330, 200); // Lower frequency, slightly longer
+    }
+
+    // Visual alert (using same flash but could be different color)
+    if (state.settings.visualAlertEnabled) {
+        elements.alertFlash.classList.add('active', 'posture');
+        setTimeout(() => {
+            elements.alertFlash.classList.remove('active', 'posture');
+        }, 400);
+    }
+
+    // Browser notification
+    if (state.settings.notifyEnabled) {
+        sendNotification(`Posture alert: ${issue}! Count: ${state.postureAlertCount}`);
+    }
+}
+
+function triggerPostureContinuousAlert() {
+    const issue = state.currentPostureIssue || 'Poor posture';
+
+    if (state.settings.soundEnabled) {
+        playBeep(330, 200);
+    }
+
+    if (state.settings.visualAlertEnabled) {
+        elements.alertFlash.classList.add('active', 'posture');
+        setTimeout(() => {
+            elements.alertFlash.classList.remove('active', 'posture');
+        }, 400);
+    }
+
+    if (state.settings.notifyEnabled) {
+        sendNotification(`Still bad posture: ${issue}!`);
+    }
+}
+
+function updatePostureStatus(badPosture) {
+    if (!elements.postureStatus) return;
+
+    const statusText = elements.postureStatus.querySelector('.posture-status-text');
+    if (!statusText) return;
+
+    elements.postureStatus.classList.remove('good', 'bad');
+
+    if (badPosture) {
+        statusText.textContent = state.currentPostureIssue || 'Bad posture';
+        elements.postureStatus.classList.add('bad');
+    } else {
+        statusText.textContent = 'Good posture';
+        elements.postureStatus.classList.add('good');
     }
 }
 
@@ -696,6 +1228,15 @@ function updateUI() {
             elements.touchRate.textContent = rate.toFixed(1);
         }
     }
+
+    // Update posture statistics
+    if (elements.postureAlertCount) {
+        elements.postureAlertCount.textContent = state.postureAlertCount;
+    }
+    if (elements.lastPostureAlert && state.lastPostureAlertTime) {
+        const secAgo = Math.round((Date.now() - state.lastPostureAlertTime) / 1000);
+        elements.lastPostureAlert.textContent = `${secAgo}s ago`;
+    }
 }
 
 function updateDetectionStatus(faceVisible, touching) {
@@ -890,6 +1431,91 @@ function setupEventListeners() {
         state.settings.zones.chin = e.target.checked;
         saveSettings();
     });
+
+    // Posture detection controls
+    if (elements.postureToggle) {
+        elements.postureToggle.addEventListener('change', async (e) => {
+            state.settings.posture.enabled = e.target.checked;
+            saveSettings();
+
+            if (e.target.checked) {
+                // Enable posture detection - initialize lateral camera if selected
+                if (state.settings.posture.lateralCameraId) {
+                    await initializeLateralCamera(state.settings.posture.lateralCameraId);
+                }
+            } else {
+                // Disable posture detection - stop lateral camera
+                stopLateralCamera();
+                stopPostureContinuousAlert();
+                state.isBadPosture = false;
+                state.wasBadPosture = false;
+            }
+            updateLateralCameraVisibility();
+        });
+    }
+
+    if (elements.lateralCameraSelect) {
+        elements.lateralCameraSelect.addEventListener('change', async (e) => {
+            const deviceId = e.target.value;
+            state.settings.posture.lateralCameraId = deviceId || null;
+            saveSettings();
+
+            if (deviceId && state.settings.posture.enabled) {
+                await initializeLateralCamera(deviceId);
+            } else {
+                stopLateralCamera();
+            }
+            updateLateralCameraVisibility();
+        });
+    }
+
+    if (elements.showPoseLandmarks) {
+        elements.showPoseLandmarks.addEventListener('change', (e) => {
+            state.settings.posture.showPoseLandmarks = e.target.checked;
+            saveSettings();
+        });
+    }
+
+    if (elements.postureSensitivitySlider) {
+        elements.postureSensitivitySlider.addEventListener('input', (e) => {
+            state.settings.posture.sensitivity = parseInt(e.target.value, 10);
+            elements.postureSensitivityValue.textContent = `${state.settings.posture.sensitivity}%`;
+            saveSettings();
+        });
+    }
+
+    if (elements.headForwardSlider) {
+        elements.headForwardSlider.addEventListener('input', (e) => {
+            state.settings.posture.headForwardThreshold = parseInt(e.target.value, 10);
+            elements.headForwardValue.textContent = `${state.settings.posture.headForwardThreshold}°`;
+            saveSettings();
+        });
+    }
+
+    if (elements.shoulderSlouchSlider) {
+        elements.shoulderSlouchSlider.addEventListener('input', (e) => {
+            state.settings.posture.shoulderSlouchThreshold = parseInt(e.target.value, 10);
+            elements.shoulderSlouchValue.textContent = `${state.settings.posture.shoulderSlouchThreshold}°`;
+            saveSettings();
+        });
+    }
+
+    if (elements.spineAngleSlider) {
+        elements.spineAngleSlider.addEventListener('input', (e) => {
+            state.settings.posture.spineAngleThreshold = parseInt(e.target.value, 10);
+            elements.spineAngleValue.textContent = `${state.settings.posture.spineAngleThreshold}°`;
+            saveSettings();
+        });
+    }
+
+    if (elements.postureCooldownSlider) {
+        elements.postureCooldownSlider.addEventListener('input', (e) => {
+            const value = parseFloat(e.target.value);
+            state.settings.posture.alertCooldownMs = value * 1000;
+            elements.postureCooldownValue.textContent = `${value}s`;
+            saveSettings();
+        });
+    }
 }
 
 async function startMonitoring() {
@@ -914,6 +1540,14 @@ async function startMonitoring() {
         return;
     }
 
+    // Enumerate available cameras for lateral camera selection
+    await enumerateCameras();
+
+    // Initialize lateral camera if posture detection is enabled and camera is selected
+    if (state.settings.posture.enabled && state.settings.posture.lateralCameraId) {
+        await initializeLateralCamera(state.settings.posture.lateralCameraId);
+    }
+
     // Hide loading, show video
     elements.loadingState.classList.remove('visible');
 
@@ -922,11 +1556,14 @@ async function startMonitoring() {
     state.startTime = Date.now();
     state.touchCount = 0;
     state.lastTouchTime = null;
+    state.postureAlertCount = 0;
+    state.lastPostureAlertTime = null;
 
     // Update UI
     elements.connectionStatus.classList.add('active');
     elements.statusText.textContent = 'Active';
     elements.detectionStatus.classList.add('visible');
+    updateLateralCameraVisibility();
 
     // Start detection loop
     detectFrame();
@@ -944,32 +1581,57 @@ function stopMonitoring() {
     // Stop continuous beep timer
     stopContinuousBeep();
 
-    // Stop camera
+    // Stop posture continuous alert timer
+    stopPostureContinuousAlert();
+
+    // Stop main camera
     if (elements.video.srcObject) {
         elements.video.srcObject.getTracks().forEach(track => track.stop());
         elements.video.srcObject = null;
     }
+
+    // Stop lateral camera
+    stopLateralCamera();
 
     // Clear canvas
     if (state.ctx) {
         state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
     }
 
+    // Clear lateral canvas
+    if (state.lateralCtx) {
+        state.lateralCtx.clearRect(0, 0, state.lateralCanvas.width, state.lateralCanvas.height);
+    }
+
+    // Reset posture state
+    state.isBadPosture = false;
+    state.wasBadPosture = false;
+
     // Update UI
     elements.connectionStatus.classList.remove('active');
     elements.statusText.textContent = 'Inactive';
     elements.detectionStatus.classList.remove('visible');
     elements.welcomeContent.classList.remove('hidden');
+    updateLateralCameraVisibility();
 }
 
 function resetStatistics() {
     state.touchCount = 0;
     state.lastTouchTime = null;
+    state.postureAlertCount = 0;
+    state.lastPostureAlertTime = null;
     state.startTime = Date.now();
 
     elements.touchCount.textContent = '0';
     elements.lastTouch.textContent = '--';
     elements.touchRate.textContent = '0.0';
+
+    if (elements.postureAlertCount) {
+        elements.postureAlertCount.textContent = '0';
+    }
+    if (elements.lastPostureAlert) {
+        elements.lastPostureAlert.textContent = '--';
+    }
 }
 
 // ============================================================================
