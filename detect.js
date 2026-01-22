@@ -61,6 +61,8 @@ const state = {
         showFaceMesh: true,
         showHands: true,
         showProximity: false,
+        // Front camera selection for nail biting detection
+        frontCameraId: null,
         // Detection zones - which regions trigger alerts
         zones: {
             mouth: true,
@@ -243,6 +245,7 @@ const elements = {
     showProximity: document.getElementById('showProximity'),
     sensitivitySlider: document.getElementById('sensitivitySlider'),
     sensitivityValue: document.getElementById('sensitivityValue'),
+    frontCameraSelect: document.getElementById('frontCameraSelect'),
 
     // Zone toggles
     zoneMouth: document.getElementById('zoneMouth'),
@@ -331,14 +334,28 @@ async function initializeMediaPipe() {
     }
 }
 
-async function initializeCamera() {
+async function initializeCamera(deviceId = null) {
     try {
+        // Stop existing stream if any
+        if (elements.video.srcObject) {
+            elements.video.srcObject.getTracks().forEach(track => track.stop());
+        }
+
+        // Build video constraints
+        const videoConstraints = {
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+        };
+
+        // Use specific device if provided, otherwise use front-facing camera
+        if (deviceId) {
+            videoConstraints.deviceId = { exact: deviceId };
+        } else {
+            videoConstraints.facingMode = 'user';
+        }
+
         const stream = await navigator.mediaDevices.getUserMedia({
-            video: {
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-                facingMode: 'user'
-            },
+            video: videoConstraints,
             audio: false
         });
 
@@ -384,22 +401,38 @@ async function enumerateCameras() {
 }
 
 function populateCameraSelect() {
-    if (!elements.lateralCameraSelect) return;
+    // Populate front camera select
+    if (elements.frontCameraSelect) {
+        elements.frontCameraSelect.innerHTML = '<option value="">Default camera</option>';
 
-    // Clear existing options
-    elements.lateralCameraSelect.innerHTML = '<option value="">Select lateral camera...</option>';
+        state.availableCameras.forEach((camera, index) => {
+            const option = document.createElement('option');
+            option.value = camera.deviceId;
+            option.textContent = camera.label || `Camera ${index + 1}`;
+            elements.frontCameraSelect.appendChild(option);
+        });
 
-    // Add camera options
-    state.availableCameras.forEach((camera, index) => {
-        const option = document.createElement('option');
-        option.value = camera.deviceId;
-        option.textContent = camera.label || `Camera ${index + 1}`;
-        elements.lateralCameraSelect.appendChild(option);
-    });
+        // Select previously chosen camera if available
+        if (state.settings.frontCameraId) {
+            elements.frontCameraSelect.value = state.settings.frontCameraId;
+        }
+    }
 
-    // Select previously chosen camera if available
-    if (state.settings.posture.lateralCameraId) {
-        elements.lateralCameraSelect.value = state.settings.posture.lateralCameraId;
+    // Populate lateral camera select
+    if (elements.lateralCameraSelect) {
+        elements.lateralCameraSelect.innerHTML = '<option value="">Select lateral camera...</option>';
+
+        state.availableCameras.forEach((camera, index) => {
+            const option = document.createElement('option');
+            option.value = camera.deviceId;
+            option.textContent = camera.label || `Camera ${index + 1}`;
+            elements.lateralCameraSelect.appendChild(option);
+        });
+
+        // Select previously chosen camera if available
+        if (state.settings.posture.lateralCameraId) {
+            elements.lateralCameraSelect.value = state.settings.posture.lateralCameraId;
+        }
     }
 }
 
@@ -1404,6 +1437,20 @@ function setupEventListeners() {
         saveSettings();
     });
 
+    // Front camera selection
+    if (elements.frontCameraSelect) {
+        elements.frontCameraSelect.addEventListener('change', async (e) => {
+            const deviceId = e.target.value;
+            state.settings.frontCameraId = deviceId || null;
+            saveSettings();
+
+            // If monitoring is running, switch cameras
+            if (state.isRunning) {
+                await initializeCamera(deviceId || null);
+            }
+        });
+    }
+
     // Zone toggles
     elements.zoneMouth.addEventListener('change', (e) => {
         state.settings.zones.mouth = e.target.checked;
@@ -1532,16 +1579,16 @@ async function startMonitoring() {
         return;
     }
 
-    // Initialize camera
-    const camInit = await initializeCamera();
+    // Enumerate available cameras first (needed for camera selection)
+    await enumerateCameras();
+
+    // Initialize front camera (use selected camera if available)
+    const camInit = await initializeCamera(state.settings.frontCameraId);
     if (!camInit) {
         elements.loadingState.classList.remove('visible');
         elements.welcomeContent.classList.remove('hidden');
         return;
     }
-
-    // Enumerate available cameras for lateral camera selection
-    await enumerateCameras();
 
     // Initialize lateral camera if posture detection is enabled and camera is selected
     if (state.settings.posture.enabled && state.settings.posture.lateralCameraId) {
