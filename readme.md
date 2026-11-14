@@ -23,7 +23,12 @@ The app uses Google's [MediaPipe](https://ai.google.dev/edge/mediapipe/solutions
 3. **Calculate proximity** between fingertips and face regions
 4. **Trigger alerts** when hands get too close to enabled detection zones
 
-The detection uses z-depth checking to reduce false positives from hands that are in front of (but not touching) the face.
+To keep false positives down, a touch is only reported when:
+
+- the fingertip is within ~2cm of an enabled zone (the radius scales with face size, and shrinks as the head turns)
+- the hand is at roughly the same distance from the camera as the face (estimated from apparent hand vs. face size)
+- the head is not turned more than ~55° (the face mesh is unreliable beyond that)
+- the touch persists for at least 150ms
 
 ## Detection Zones
 
