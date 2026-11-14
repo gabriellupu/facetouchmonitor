@@ -40,6 +40,8 @@ const state = {
     alertCooldown: false,
     isTouching: false,
     wasTouching: false,
+    touchCandidateSince: null,   // when the current run of raw detections began
+    lastRawTouchTime: null,      // last frame with a raw detection
     continuousBeepTimer: null,
 
     // Posture alert state
@@ -110,6 +112,37 @@ const FACE_REGIONS = {
 // Hand fingertip indices (MediaPipe Hand Landmarks)
 const FINGERTIPS = [4, 8, 12, 16, 20]; // thumb, index, middle, ring, pinky
 const FINGER_NAMES = ['thumb', 'index', 'middle', 'ring', 'pinky'];
+
+// Landmarks used to measure the face (forehead top, chin, left/right face edge)
+const FACE_TOP = 10;
+const FACE_CHIN = 152;
+const FACE_SIDE_A = 234;
+const FACE_SIDE_B = 454;
+
+// Approximate real-world face size (MediaPipe canonical face model, metres)
+const FACE_HEIGHT_M = 0.177;
+const FACE_WIDTH_M = 0.151;
+
+// Touch detection tuning
+const DETECTION = {
+    // Fingertip must be within this fraction of the face height of a zone (~2cm)
+    touchRadiusRatio: 0.12,
+    // Head turned beyond this: start shrinking the touch radius (face is foreshortened)
+    yawTightenStartDeg: 15,
+    // Head turned beyond this: face mesh is unreliable, don't alert
+    maxYawDeg: 55,
+    // Sanity range for face width/height (canonical ~0.85); outside = garbage mesh
+    faceAspectMin: 0.55,
+    faceAspectMax: 1.25,
+    // Allowed hand-vs-face apparent scale (= faceDepth / handDepth).
+    // >max: hand is well in front of the face, <min: far behind / not a real hand
+    depthRatioMin: 0.6,
+    depthRatioMax: 1.45,
+    // A touch must persist this long before alerting (filters flicker)
+    confirmMs: 150,
+    // ...and be absent this long before it counts as ended
+    releaseMs: 250
+};
 
 // LocalStorage key for settings persistence
 const SETTINGS_STORAGE_KEY = 'faceTouchMonitor_settings';
@@ -306,9 +339,10 @@ async function initializeMediaPipe() {
             },
             runningMode: 'VIDEO',
             numHands: 2,
-            minHandDetectionConfidence: 0.5,
-            minHandPresenceConfidence: 0.5,
-            minTrackingConfidence: 0.5
+            // Stricter than default: a turned head / ear is easily mistaken for a palm
+            minHandDetectionConfidence: 0.7,
+            minHandPresenceConfidence: 0.6,
+            minTrackingConfidence: 0.6
         });
 
         // Initialize Pose Landmarker for posture detection
@@ -498,6 +532,7 @@ function detectFrame() {
     // Process and draw results
     const faceLandmarks = faceResults.faceLandmarks?.[0] || null;
     const handLandmarksList = handResults.landmarks || [];
+    const handWorldLandmarksList = handResults.worldLandmarks || [];
 
     // Draw visualizations
     if (faceLandmarks) {
@@ -514,7 +549,8 @@ function detectFrame() {
     }
 
     // Check for face touch
-    const touchDetected = checkFaceTouch(faceLandmarks, handLandmarksList);
+    const touchedZone = checkFaceTouch(faceLandmarks, handLandmarksList, handWorldLandmarksList);
+    const touchDetected = debounceTouch(touchedZone, now);
 
     // Handle touch state changes
     handleTouchState(touchDetected, faceLandmarks !== null);
@@ -539,87 +575,190 @@ function detectFrame() {
 // Face Touch Detection
 // ============================================================================
 
-function checkFaceTouch(faceLandmarks, handLandmarksList) {
+function toPixels(lm, width, height) {
+    // MediaPipe z uses roughly the same scale as x
+    return { x: lm.x * width, y: lm.y * height, z: lm.z * width };
+}
+
+function distance3D(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+/**
+ * Measure the face: size in pixels, head yaw and whether the mesh can be trusted.
+ * Height/width are 3D distances so they stay stable when the head rotates.
+ */
+function getFaceMetrics(faceLandmarks, width, height) {
+    const top = toPixels(faceLandmarks[FACE_TOP], width, height);
+    const chin = toPixels(faceLandmarks[FACE_CHIN], width, height);
+    const sideA = toPixels(faceLandmarks[FACE_SIDE_A], width, height);
+    const sideB = toPixels(faceLandmarks[FACE_SIDE_B], width, height);
+
+    const faceHeight = distance3D(top, chin);
+    const faceWidth = distance3D(sideA, sideB);
+    const aspect = faceHeight > 0 ? faceWidth / faceHeight : 0;
+
+    // Yaw: how far the ear-to-ear axis has rotated out of the image plane
+    const yawDeg = Math.abs(Math.atan2(sideB.z - sideA.z, Math.abs(sideB.x - sideA.x))) * 180 / Math.PI;
+
+    const reliable = faceHeight > 0
+        && aspect >= DETECTION.faceAspectMin
+        && aspect <= DETECTION.faceAspectMax
+        && yawDeg <= DETECTION.maxYawDeg;
+
+    // When the head turns, the face gets narrower on screen - shrink the radius with it
+    const toRad = Math.PI / 180;
+    const yawFactor = yawDeg <= DETECTION.yawTightenStartDeg
+        ? 1
+        : Math.cos(yawDeg * toRad) / Math.cos(DETECTION.yawTightenStartDeg * toRad);
+
+    return {
+        faceHeight,
+        yawDeg,
+        reliable,
+        yawFactor,
+        // Pixels per metre at the face's depth (average of two independent measures)
+        pxPerMeter: (faceHeight / FACE_HEIGHT_M + faceWidth / FACE_WIDTH_M) / 2
+    };
+}
+
+/**
+ * Touch radius in pixels. Scales with face size so behaviour is the same
+ * regardless of camera resolution or distance from the camera.
+ */
+function getTouchThreshold(faceMetrics) {
+    const sensitivityMultiplier = state.settings.sensitivity / 100;
+    return DETECTION.touchRadiusRatio * faceMetrics.faceHeight * faceMetrics.yawFactor / sensitivityMultiplier;
+}
+
+/**
+ * Pixels per metre at the hand's depth: compares on-screen bone lengths with the
+ * metric bone lengths from the world landmarks (both projected on the image plane,
+ * so a hand pointing at the camera is handled correctly).
+ */
+function getHandPxPerMeter(handLandmarks, worldLandmarks, width, height) {
+    if (!worldLandmarks) return null;
+
+    let pixelLength = 0;
+    let worldLength = 0;
+    for (const { start, end } of HandLandmarker.HAND_CONNECTIONS) {
+        pixelLength += Math.hypot(
+            (handLandmarks[start].x - handLandmarks[end].x) * width,
+            (handLandmarks[start].y - handLandmarks[end].y) * height
+        );
+        worldLength += Math.hypot(
+            worldLandmarks[start].x - worldLandmarks[end].x,
+            worldLandmarks[start].y - worldLandmarks[end].y
+        );
+    }
+
+    return worldLength > 0.01 ? pixelLength / worldLength : null;
+}
+
+/**
+ * Is the hand roughly as far from the camera as the face?
+ * Apparent scale is inversely proportional to depth, so the scale ratio tells us
+ * whether the hand is merely in front of the face (looks bigger) rather than on it.
+ */
+function isHandAtFaceDepth(handLandmarks, worldLandmarks, faceMetrics, width, height) {
+    const handPxPerMeter = getHandPxPerMeter(handLandmarks, worldLandmarks, width, height);
+    if (!handPxPerMeter) return true; // can't tell - don't block detection
+
+    const depthRatio = handPxPerMeter / faceMetrics.pxPerMeter;
+    return depthRatio >= DETECTION.depthRatioMin && depthRatio <= DETECTION.depthRatioMax;
+}
+
+/**
+ * Raw per-frame check. Returns the touched zone name, or null.
+ */
+function checkFaceTouch(faceLandmarks, handLandmarksList, handWorldLandmarksList = []) {
     if (!faceLandmarks || handLandmarksList.length === 0) {
-        state.lastTouchedZone = null;
-        return false;
+        return null;
     }
 
     const videoWidth = state.canvas.width;
     const videoHeight = state.canvas.height;
 
-    // Determine which zones are enabled based on settings
-    const enabledZones = [];
-    if (state.settings.zones.mouth) enabledZones.push('mouth');
-    if (state.settings.zones.nose) enabledZones.push('nose');
-    if (state.settings.zones.leftEye) enabledZones.push('leftEye');
-    if (state.settings.zones.rightEye) enabledZones.push('rightEye');
-    if (state.settings.zones.leftCheek) enabledZones.push('leftCheek');
-    if (state.settings.zones.rightCheek) enabledZones.push('rightCheek');
-    if (state.settings.zones.chin) enabledZones.push('chin');
-
-    // If no zones enabled, no detection
+    const enabledZones = Object.keys(FACE_REGIONS).filter(zone => state.settings.zones[zone]);
     if (enabledZones.length === 0) {
-        state.lastTouchedZone = null;
-        return false;
+        return null;
     }
+
+    // Head turned too far or mesh distorted: landmark positions can't be trusted
+    const faceMetrics = getFaceMetrics(faceLandmarks, videoWidth, videoHeight);
+    if (!faceMetrics.reliable) {
+        return null;
+    }
+
+    const threshold = getTouchThreshold(faceMetrics);
 
     // Convert face landmarks to pixel coordinates for enabled zones only
     const facePoints = {};
     for (const region of enabledZones) {
-        const indices = FACE_REGIONS[region];
-        if (indices) {
-            facePoints[region] = indices.map(idx => {
-                const lm = faceLandmarks[idx];
-                return {
-                    x: lm.x * videoWidth,
-                    y: lm.y * videoHeight,
-                    z: lm.z * videoWidth
-                };
-            });
-        }
+        facePoints[region] = FACE_REGIONS[region].map(idx => ({
+            x: faceLandmarks[idx].x * videoWidth,
+            y: faceLandmarks[idx].y * videoHeight
+        }));
     }
 
-    // Check each hand
-    for (const handLandmarks of handLandmarksList) {
-        // Check fingertips
-        for (let i = 0; i < FINGERTIPS.length; i++) {
-            const tipIdx = FINGERTIPS[i];
-            const tip = handLandmarks[tipIdx];
+    let closestZone = null;
+    let closestDist = threshold;
+
+    for (let h = 0; h < handLandmarksList.length; h++) {
+        const handLandmarks = handLandmarksList[h];
+
+        // Ignore hands that are clearly in front of (or far behind) the face
+        if (!isHandAtFaceDepth(handLandmarks, handWorldLandmarksList[h], faceMetrics, videoWidth, videoHeight)) {
+            continue;
+        }
+
+        for (const tipIdx of FINGERTIPS) {
             const tipPoint = {
-                x: tip.x * videoWidth,
-                y: tip.y * videoHeight,
-                z: tip.z * videoWidth
+                x: handLandmarks[tipIdx].x * videoWidth,
+                y: handLandmarks[tipIdx].y * videoHeight
             };
 
-            // Check against each enabled face region
             for (const [region, points] of Object.entries(facePoints)) {
-                const minDist = getMinDistance(tipPoint, points);
-
-                // Base threshold adjusted by sensitivity
-                // Lower sensitivity = larger threshold = less sensitive
-                const baseThreshold = 40; // pixels
-                const sensitivityMultiplier = state.settings.sensitivity / 100;
-                const threshold = baseThreshold / sensitivityMultiplier;
-
-                if (minDist < threshold) {
-                    // Additional z-depth check to reduce false positives
-                    // Hand should be roughly at same depth or closer than face
-                    const avgFaceZ = points.reduce((sum, p) => sum + p.z, 0) / points.length;
-                    const zDiff = tipPoint.z - avgFaceZ;
-
-                    // If hand is significantly behind face, ignore
-                    if (zDiff < 50) { // Allow some tolerance
-                        state.lastTouchedZone = region;
-                        return true;
-                    }
+                const dist = getMinDistance(tipPoint, points);
+                if (dist < closestDist) {
+                    closestDist = dist;
+                    closestZone = region;
                 }
             }
         }
     }
 
-    state.lastTouchedZone = null;
+    return closestZone;
+}
+
+/**
+ * Temporal filter: a touch has to persist for confirmMs before it is reported and
+ * be gone for releaseMs before it ends. Removes single-frame glitches (hand
+ * tracker briefly latching onto the face, mesh jitter while the head moves).
+ */
+function debounceTouch(zone, now) {
+    if (zone) {
+        if (state.touchCandidateSince === null) {
+            state.touchCandidateSince = now;
+        }
+        state.lastRawTouchTime = now;
+        state.lastTouchedZone = zone;
+        return state.isTouching || now - state.touchCandidateSince >= DETECTION.confirmMs;
+    }
+
+    if (state.lastRawTouchTime !== null && now - state.lastRawTouchTime < DETECTION.releaseMs) {
+        // Brief dropout: hold the current state
+        return state.isTouching;
+    }
+
+    resetTouchFilter();
     return false;
+}
+
+function resetTouchFilter() {
+    state.touchCandidateSince = null;
+    state.lastRawTouchTime = null;
+    state.lastTouchedZone = null;
 }
 
 // Helper to get display name for a zone
@@ -1167,7 +1306,7 @@ function drawProximityZones(faceLandmarks) {
         { region: 'chin', color: 'rgba(34, 197, 94, 0.2)', enabled: state.settings.zones.chin }
     ];
 
-    const threshold = 40 / (state.settings.sensitivity / 100);
+    const threshold = getTouchThreshold(getFaceMetrics(faceLandmarks, videoWidth, videoHeight));
 
     for (const { region, color, enabled } of allZones) {
         // Only draw enabled zones
@@ -1602,6 +1741,11 @@ function stopMonitoring() {
     if (state.lateralCtx) {
         state.lateralCtx.clearRect(0, 0, state.lateralCanvas.width, state.lateralCanvas.height);
     }
+
+    // Reset touch state
+    state.isTouching = false;
+    state.wasTouching = false;
+    resetTouchFilter();
 
     // Reset posture state
     state.isBadPosture = false;
